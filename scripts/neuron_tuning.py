@@ -28,7 +28,7 @@ n_hidden_1 = 512
 n_hidden_2 = 512
 n_classes = 10 # MNIST total classes (0-9 digits)
 
-# Setting random seed for replication
+# Set random seed for replication
 seed=1234
 tf.set_random_seed(seed)
 np.random.seed(seed=seed)
