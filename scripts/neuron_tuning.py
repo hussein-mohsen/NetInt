@@ -2,8 +2,6 @@ from __future__ import print_function
 
 import argparse
 
-# Import MNIST data
-
 import os
 import time
 import random
@@ -79,6 +77,7 @@ biases = {
     'b2': tf.Variable(tf.random_normal([n_hidden_2])),
     'b3': tf.Variable(tf.random_normal([n_classes]))
 }
+
 
 # helper function to get indices of layer at index in a graph
 def get_layer_inds(boundaries, index):
