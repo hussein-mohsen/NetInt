@@ -31,7 +31,7 @@ seed=1234
 tf.set_random_seed(seed)
 np.random.seed(seed=seed)
 random.seed(seed)
-display_step = 2
+display_step = 1
 
 # Indices of available neurons in input and hidden layers.
 # Updated whenever centrality-based tuning takes place by eliminating neurons 'turned off'
@@ -48,6 +48,7 @@ off_indices = {
     'o3': np.array([], dtype=int) # off indices in hidden layer 2
 }
 
+tuning_type = 'centrality' # tuning type:Centrality-based (default) or KL Divergence
 tuning_step = 1 # number of step(s) at which centrality-based tuning periodically takes place
 k_selected=1 # number of neurons selected to be tuned ('turned off') each round
 n_tuned_layers = 1 # number of layers to be tuned; a value of 2 means layers 2 and 3 (1st & 2nd hidden layers will be tuned)
@@ -105,14 +106,20 @@ init = tf.global_variables_initializer()
 # sample command with tuning: python tune_weights.py --tune 1
 parser = argparse.ArgumentParser(description="Argument Parser")
 parser.add_argument("--ts", type=int, help="Tuning step size")
+parser.add_argument("--tt", type=int, help="Tuning type")
 parser.add_argument("--sd", type=int, help="Randomization seed")
 parser.add_argument("--ep", type=int, help="Number of epochs")
 parser.add_argument("--nt", type=int, help="Number of tuned layers")
+
 args = parser.parse_args()
 
 if args.ts:
     tuning_step = args.ts
     print("Centrality measure tuning step set to {}".format(tuning_step))
+
+if args.tt:
+    tuning_type = args.tt
+    print("Tuning type set to {}".format(n_tuned_layers))
     
 if args.sd:
     seed = args.sd
@@ -125,10 +132,12 @@ if args.ep:
 if args.nt:
     n_tuned_layers = args.nt
     print("Number of tuned layers set to {}".format(n_tuned_layers))
-
+    
 with tf.Session() as sess:
     sess.run(init)
 
+    print("Training has started.")
+    
     # Training cycle
     for epoch in range(1, training_epochs+1):
         avg_cost = 0.0
@@ -151,8 +160,7 @@ with tf.Session() as sess:
             for l in range(2, tuning_layer_end):
                 print("Tuning on layer {}".format(l))        
                 # create weight graph
-                weight_graph, layer_boundaries = create_weight_graph(weights_dict, l)
-                current_off_inds = get_off_inds(weight_graph, avail_indices['a'+str(l)], layer_boundaries=layer_boundaries, k_selected=k_selected, centrality='btw', random=False)
+                current_off_inds = get_off_inds(weights_dict, avail_indices['a'+str(l)], layer_index=l, k_selected=k_selected, tuning_type=tuning_type)
                 
                 # update available and off_indices (i.e. indices of tuned neurons)
                 avail_indices['a'+str(l)] = np.delete(avail_indices['a'+str(l)], current_off_inds)
@@ -177,11 +185,11 @@ with tf.Session() as sess:
             avg_cost += c / total_batch
             
         end = time.time()
-        print('Execution Time: {0} {1}'.format(1000*(end-start), 'ms'))
             
         # Display logs per epoch step
         if epoch % display_step == 0:
-            print("Epoch:", '%04d' % (epoch+1), "cost={:.9f}".format(avg_cost))
+            print("\nEpoch:", '%04d' % (epoch+1), "cost={:.9f}".format(avg_cost))
+            print('Execution Time: {0} {1}'.format(1000*(end-start), 'ms'))
             
     print("Optimization Done.")
 

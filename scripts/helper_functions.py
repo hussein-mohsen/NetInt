@@ -1,8 +1,39 @@
 import numpy as np
-from numpy import dtype, shape
+#from numpy import dtype, shape
 
 import tensorflow as tf
 import networkx as nx
+
+from sklearn.preprocessing import minmax_scale
+
+# KL divergence between two probability distributions
+def kl_div(target, empirical):
+    kl_div_value = (empirical * np.log(empirical/target)).sum()
+    return kl_div_value
+
+# scales empirical matrix to [0,1] + shift_factor and calculate KL div with Gaussian(mn=0, sd=0.1) + shift_factor
+def calculate_scaled_kl_div(input_matrix, shift_factor=5, target_dist='Gaussian'):
+    input_matrix = minmax_scale(input_matrix, feature_range=(0,1), axis=1) + shift_factor
+    target_dist = np.random.normal(1, 0.1, (1, input_matrix.shape[0])) + shift_factor
+    kl_values = np.apply_along_axis(kl_div, 0, target_dist, input_matrix)
+    return kl_values
+
+# calculates KL divergence from a target distribution for incoming and outcoming weight distributions
+# KL calculated after min-max scaling to [0, 1] + eps; returns averaged incoming and outcoming scores for each neuron
+def calculate_kl_div_layer_values(weights_dict, layer_index, target_dist='Gaussian'):    
+    if layer_index > len(weights_dict): # output layer or erroneous index
+        raise Exception('Layer is out of bounds.')
+    else:
+        outcoming_weights = weights_dict['w'+str(layer_index)]
+        kl_values = calculate_scaled_kl_div(outcoming_weights)
+        return kl_values
+    
+        if layer_index > 1:
+            incoming_weights = weights_dict['w'+str(layer_index-1)]
+            incoming_kl_values = calculate_scaled_kl_div(incoming_weights, axis=1)
+            kl_values = (kl_values + incoming_kl_values) / 2
+            
+    return kl_values
 
 # helper function to get indices of layer at index in a graph
 def get_layer_inds(boundaries, index):
@@ -19,24 +50,30 @@ def get_layer_inds(boundaries, index):
 
 # gets indices to be tuned (i.e. turned off and replaced by 0 values)
 # available indices are the ones not tuned prior to selection   
-# If random = False: centrality-based tuning mode; else, random tuning mode        
-def get_off_inds(weight_graph, avail_inds, layer_boundaries, input_list=[], k_selected=4, centrality='btw', random=False, dt=[('weight', float)]):            
-    if(random == False): # sorted centrality-based selection
-        weight_graph = weight_graph.astype(dt)
-        weight_G = nx.from_numpy_matrix(weight_graph) # create graph object
-        
-        # calculate centrality measure values
-        print("Calculating centrality measures...")
-        cent_values = np.array(list(nx.betweenness_centrality(weight_G, k=7, weight='weight').values()))
+# tuning_type: 'centrality' (default: betweenness centrality) 
+#              'kl_div' (default: with Gaussian)   
+#              'random': 
+def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[], k_selected=4, tuning_type='centrality', dt=[('weight', float)]):    
+    if tuning_type == 'random': # random selection of indices
+        select_inds = random.sample(range(len(avail_inds)), k_selected) # indices within avail_inds to be turned off        
+    else:
+        if tuning_type == 'centrality': # sorted centrality-based selection
+            weight_graph, layer_boundaries = create_weight_graph(weights_dict, layer_index)
+            weight_graph = weight_graph.astype(dt)
+            weight_G = nx.from_numpy_matrix(weight_graph) # create graph object
+            
+            # calculate centrality measure values
+            print("Calculating centrality measures...")
+            values = np.array(list(nx.betweenness_centrality(weight_G, k=7, weight='weight').values()))
+        elif tuning_type == 'kl_div':
+            # calculate KL divergence from a target distribution (default: Gaussian)
+            print("Calculating KL-divergence values...")
+            values = calculate_kl_div_layer_values(weights_dict, layer_index, target_dist='Gaussian')
 
-        # select available indices
-        cent_values = cent_values[avail_inds]
-        
-        # select k_selected nodes to tune
-        cent_inds = np.argsort(cent_values)
-        select_inds = cent_inds[0:k_selected]
-    else: # random selection of indices
-        select_inds = random.sample(range(len(avail_inds)), k_selected) # indices within avail_inds to be turned off
+        # select nodes with lowest k_selected to tune
+        values = values[avail_inds]
+        inds = np.argsort(values)
+        select_inds = inds[0:k_selected]
     
     off_inds = avail_inds[select_inds]
     return off_inds # return array of indices to be tuned
@@ -49,18 +86,6 @@ def pad_matrix(input_matrix):
 
     input_matrix = np.pad(input_matrix, pad_width=((0, rows_increment), (0, cols_increment)), mode='constant', constant_values=(0, 0))
     return input_matrix
-
-# helper function that turns off neurons at off_indices (0 value assignment)
-# returns a tf tensor
-def tune_weights(off_indices, current_weights, layer):
-    current_weights['w'+str(layer)][off_indices, :] = 0 # turn off connections outcoming from off_indices neurons in the layer
-    print("Outcoming connections at layer {} tuned.".format(layer))
-     
-    if(layer > 1):
-        current_weights['w'+str(layer-1)][:, off_indices] = 0 # turn off connections incoming to off_indices neurons in the layer
-        print("Incoming connections at layer {} tuned.".format(layer))
-        
-    return tf.convert_to_tensor(current_weights['w'+str(layer)], dtype=tf.float32)
 
 # creates a weight graph at an input layer
 # Layer indexing starts at 1; numpy indexing starts at 0
@@ -105,3 +130,15 @@ def create_weight_graph(weights_dict, layer):
                 weight_graph[layer_end:matrix_end, layer_start:layer_end] = np.transpose(weight_matrix)
 
     return weight_graph, [layer_start, layer_end]
+
+# helper function that turns off neurons at off_indices (0 value assignment)
+# returns a tf tensor
+def tune_weights(off_indices, current_weights, layer):
+    current_weights['w'+str(layer)][off_indices, :] = 0 # turn off connections outcoming from off_indices neurons in the layer
+    print("Outcoming connections at layer {} tuned.".format(layer))
+     
+    if(layer > 1):
+        current_weights['w'+str(layer-1)][:, off_indices] = 0 # turn off connections incoming to off_indices neurons in the layer
+        print("Incoming connections at layer {} tuned.".format(layer))
+        
+    return tf.convert_to_tensor(current_weights['w'+str(layer)], dtype=tf.float32)
