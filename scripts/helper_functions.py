@@ -6,16 +6,29 @@ import networkx as nx
 
 from sklearn.preprocessing import minmax_scale
 
-# KL divergence between two probability distributions
-def kl_div(target, empirical):
+# calculates KL divergence of two distributions
+def kl_div(empirical, target):
+    if(abs(empirical.sum()-1) > 0.05 or abs(target.sum()-1) > 0.05):
+        print("Warning: distributions do not sume up to 1")
+        
     kl_div_value = (empirical * np.log(empirical/target)).sum()
     return kl_div_value
 
+# scales a values s.t. sum = 1
+def totality_scale(values):
+    total = values.sum()
+    return values/total
+
 # scales empirical matrix to [0,1] + shift_factor and calculate KL div with Gaussian(mn=0, sd=0.1) + shift_factor
 def calculate_scaled_kl_div(input_matrix, shift_factor=5, target_dist='Gaussian'):
-    input_matrix = minmax_scale(input_matrix, feature_range=(0,1), axis=1) + shift_factor
-    target_dist = np.random.normal(1, 0.1, (1, input_matrix.shape[0])) + shift_factor
-    kl_values = np.apply_along_axis(kl_div, 0, target_dist, input_matrix)
+    #input_matrix = minmax_scale(input_matrix, feature_range=(0,1), axis=1) +0.001 #+ shift_factor
+    #target_dist = np.random.normal(1, 0.1, (1, input_matrix.shape[0])) +0.001 #+ shift_factor
+    
+    input_matrix += abs(input_matrix.min()) + 0.001
+    input_matrix = np.apply_along_axis(totality_scale, 1, input_matrix)
+    target_dist = totality_scale(np.random.normal(1, 0.1, (1, input_matrix.shape[1])))
+
+    kl_values = np.apply_along_axis(kl_div, 1, input_matrix, target_dist)
     return kl_values
 
 # calculates KL divergence from a target distribution for incoming and outcoming weight distributions

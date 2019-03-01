@@ -106,7 +106,7 @@ init = tf.global_variables_initializer()
 # sample command with tuning: python tune_weights.py --tune 1
 parser = argparse.ArgumentParser(description="Argument Parser")
 parser.add_argument("--ts", type=int, help="Tuning step size")
-parser.add_argument("--tt", type=int, help="Tuning type")
+parser.add_argument("--tt", help="Tuning type")
 parser.add_argument("--sd", type=int, help="Randomization seed")
 parser.add_argument("--ep", type=int, help="Number of epochs")
 parser.add_argument("--nt", type=int, help="Number of tuned layers")
@@ -144,11 +144,12 @@ with tf.Session() as sess:
         total_batch = int(mnist.train.num_examples/batch_size)
         
         start = time.time()
+        print("\nEpoch:", '%04d' % (epoch))
 
         # centrality-based neuron tuning step
         if(epoch % tuning_step == 0 and args.ts):
             weights_dict = sess.run(weights)
-            
+
             # choose layers on which tuning is executed
             tuning_layer_start = 2
             tuning_layer_end = tuning_layer_start+n_tuned_layers
@@ -188,8 +189,7 @@ with tf.Session() as sess:
             
         # Display logs per epoch step
         if epoch % display_step == 0:
-            print("\nEpoch:", '%04d' % (epoch+1), "cost={:.9f}".format(avg_cost))
-            print('Execution Time: {0} {1}'.format(1000*(end-start), 'ms'))
+            print('Execution Time: {0} {1}, Cost: {2}'.format(1000*(end-start), 'ms', avg_cost))
             
     print("Optimization Done.")
 
