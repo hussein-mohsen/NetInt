@@ -11,15 +11,13 @@ from numpy import dtype, shape
 
 import tensorflow as tf
 
-from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph
-# import MNIST_data
-from tensorflow.examples.tutorials.mnist import input_data
-mnist = input_data.read_data_sets("../data/MNIST_data/", one_hot=True)
+from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph, read_dataset, get_next_batch, set_seed
 
 # Hyperparameters
 learning_rate = 0.001
 training_epochs = 300
-batch_size = 100
+batch_size = 105
+dataset_name = 'mnist'
 
 n_input = 784 # MNIST data input (img shape: 28*28)
 n_hidden_1 = 512
@@ -110,6 +108,7 @@ parser.add_argument("--tt", help="Tuning type")
 parser.add_argument("--sd", type=int, help="Randomization seed")
 parser.add_argument("--ep", type=int, help="Number of epochs")
 parser.add_argument("--nt", type=int, help="Number of tuned layers")
+parser.add_argument("--ds", help="Dataset name")
 
 args = parser.parse_args()
 
@@ -123,6 +122,7 @@ if args.tt:
     
 if args.sd:
     seed = args.sd
+    set_seed(seed) # set same seed in helper
     print("Randomization seed set to {}".format(seed))
 
 if args.ep:
@@ -132,7 +132,14 @@ if args.ep:
 if args.nt:
     n_tuned_layers = args.nt
     print("Number of tuned layers set to {}".format(n_tuned_layers))
-    
+
+if args.ds:
+    dataset_name = args.ds
+    print("Dataset set to {}".format(dataset_name))
+
+# load data
+X_tr, Y_tr, X_ts, Y_ts = read_dataset(dataset_name)
+
 with tf.Session() as sess:
     sess.run(init)
 
@@ -141,7 +148,7 @@ with tf.Session() as sess:
     # Training cycle
     for epoch in range(1, training_epochs+1):
         avg_cost = 0.0
-        total_batch = int(mnist.train.num_examples/batch_size)
+        total_batch = int(X_tr.shape[0]/batch_size)+1
         
         start = time.time()
         print("\nEpoch:", '%04d' % (epoch))
@@ -175,10 +182,11 @@ with tf.Session() as sess:
             sess.run(neuron_tuning_op)
             
          # Loop over all batches
-        for i in range(total_batch):        
-            batch_x, batch_y = mnist.train.next_batch(batch_size)
-            # Run optimization op (backprop) and cost op (to get loss value)
+        for i in range(total_batch):            
+            #batch_x, batch_y = mnist.train.next_batch(batch_size)
+            batch_x, batch_y = get_next_batch(X_tr, Y_tr, i, batch_size)
 
+            # Run optimization op (backprop) and cost op (to get loss value)
             _, c = sess.run([train_op, loss_op], feed_dict={X: batch_x,
                                                             Y: batch_y})
             
@@ -199,4 +207,4 @@ with tf.Session() as sess:
     
     # Calculate accuracy
     accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
-    print("Accuracy:", accuracy.eval({X: mnist.test.images, Y: mnist.test.labels}))
+    print("Accuracy:", accuracy.eval({X: X_ts, Y: Y_ts}))

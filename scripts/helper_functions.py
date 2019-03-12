@@ -1,3 +1,5 @@
+import random
+
 import numpy as np
 #from numpy import dtype, shape
 
@@ -5,11 +7,17 @@ import tensorflow as tf
 import networkx as nx
 
 from sklearn.preprocessing import minmax_scale
+from numpy.random.mtrand import shuffle
+
+from scipy.io import loadmat
+from scipy.stats import pearsonr
+
+seed = 1234
 
 # calculates KL divergence of two distributions
 def kl_div(empirical, target):
     if(abs(empirical.sum()-1) > 0.05 or abs(target.sum()-1) > 0.05):
-        print("Warning: distributions do not sume up to 1")
+        print("Warning: distributions do not sum up to 1")
         
     kl_div_value = (empirical * np.log(empirical/target)).sum()
     return kl_div_value
@@ -155,3 +163,69 @@ def tune_weights(off_indices, current_weights, layer):
         print("Incoming connections at layer {} tuned.".format(layer))
         
     return tf.convert_to_tensor(current_weights['w'+str(layer)], dtype=tf.float32)
+
+# reads data
+def read_dataset(dataset_name='mnist', shiffle=True):
+    if(dataset_name == 'mnist'):
+        from tensorflow.examples.tutorials.mnist import input_data
+        mnist = input_data.read_data_sets('../data/MNIST_data/', one_hot=True)
+        
+        X_tr = mnist.train.images
+        Y_tr = mnist.train.labels
+        X_ts = mnist.test.images
+        Y_ts = mnist.test.labels
+    elif(dataset_name == 'psychencode'):
+        psychencode_filename = '../data/DSPN_bpd_large/datasets/bpd_data1.mat'
+        psychencode_data = loadmat(psychencode_filename)
+        
+        X_tr = psychencode_data['X_Gene_tr']
+        Y_tr = psychencode_data['X_Trait_tr']
+        X_ts = psychencode_data['X_Gene_te']
+        Y_ts = psychencode_data['X_Trait_te']
+    
+        select_correlated_cols = True
+        N = 932
+        
+        if(select_correlated_cols):
+            X_tr, X_ts = get_correlated_features(X_tr, Y_tr, X_ts, N)
+            
+    if shuffle:
+        data_order = np.arange(X_tr.shape[0])
+        np.random.shuffle(data_order)
+        
+        X_tr = X_tr[data_order, :]
+        Y_tr = Y_tr[data_order, :]
+
+    return X_tr, Y_tr, X_ts, Y_ts
+
+# return N columns with highest correlation with the label in training data
+def get_correlated_features(X_tr, Y_tr, X_ts, N):
+    Y_tr = np.argmax(Y_tr, axis=1)
+    corr = np.apply_along_axis(pearsonr, 0, X_tr, Y_tr)[0]
+    
+    # select N columns with highest correlation with Y_tr
+    selected_columns = np.argsort(corr)[0:N]
+    X_tr_selected = X_tr[:, selected_columns]
+    X_ts_selected = X_ts[:, selected_columns]
+
+    return X_tr_selected, X_ts_selected
+    
+# sets seed of helper function
+def set_seed(seed=1234):
+    tf.set_random_seed(seed)
+    np.random.seed(seed=seed)
+    random.seed(seed)
+    print("Seeds in helper functions set to {}".format(seed))
+    
+# batch_index starts at 0
+def get_next_batch(X_tr, Y_tr, batch_index, batch_size, seed=seed):
+    start = batch_index * batch_size
+    end = start + batch_size - 1
+    
+    if end > X_tr.shape[0]:
+        end = X_tr.shape[0] - 1
+            
+    batch_x = X_tr[start:end, :]
+    batch_y = Y_tr[start:end, :]
+    
+    return batch_x, batch_y
