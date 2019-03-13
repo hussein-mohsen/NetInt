@@ -11,18 +11,23 @@ from numpy import dtype, shape
 
 import tensorflow as tf
 
-from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph, read_dataset, get_next_batch, set_seed
+from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph, read_dataset, get_next_batch, set_seed, get_layer
 
 # Hyperparameters
 learning_rate = 0.001
-training_epochs = 300
-batch_size = 105
+training_epochs = 300 #50
+batch_size = 100
 dataset_name = 'mnist'
 
 n_input = 784 # MNIST data input (img shape: 28*28)
 n_hidden_1 = 512
 n_hidden_2 = 512
 n_classes = 10 # MNIST total classes (0-9 digits)
+
+#n_input = 932 # MNIST data input (img shape: 28*28)
+#n_hidden_1 = 400
+#n_hidden_2 = 100
+#n_classes = 2 # MNIST total classes (0-9 digits)
 
 # Set random seed for replication
 seed=1234
@@ -31,6 +36,49 @@ np.random.seed(seed=seed)
 random.seed(seed)
 display_step = 1
 
+# Tuning parameters
+tuning_type = 'centrality' # tuning type:Centrality-based (default) or KL Divergence
+tuning_step = 1 # number of step(s) at which centrality-based tuning periodically takes place
+k_selected=1 # number of neurons selected to be tuned ('turned off') each round
+n_tuned_layers = 1 # number of layers to be tuned; a value of 2 means layers 2 and 3 (1st & 2nd hidden layers will be tuned)
+
+# Parse input arguments
+# sample command with tuning: python tune_weights.py --tune 1
+parser = argparse.ArgumentParser(description="Argument Parser")
+parser.add_argument("--ts", type=int, help="Tuning step size")
+parser.add_argument("--tt", help="Tuning type")
+parser.add_argument("--sd", type=int, help="Randomization seed")
+parser.add_argument("--ep", type=int, help="Number of epochs")
+parser.add_argument("--nt", type=int, help="Number of tuned layers")
+parser.add_argument("--ds", help="Dataset name")
+
+args = parser.parse_args()
+
+if args.ts:
+    tuning_step = args.ts
+    print("Tuning step set to {}".format(tuning_step))
+
+if args.tt:
+    tuning_type = args.tt
+    print("Tuning type set to {}".format(n_tuned_layers))
+    
+if args.sd:
+    seed = args.sd
+    set_seed(seed) # set same seed in helper
+    print("Randomization seed set to {}".format(seed))
+
+if args.ep:
+    training_epochs = args.ep
+    print("Epochs set to {}".format(training_epochs))
+
+if args.nt:
+    n_tuned_layers = args.nt
+    print("Number of tuned layers set to {}".format(n_tuned_layers))
+
+if args.ds:
+    dataset_name = args.ds
+    print("Dataset set to {}".format(dataset_name))
+    
 # Indices of available neurons in input and hidden layers.
 # Updated whenever centrality-based tuning takes place by eliminating neurons 'turned off'
 avail_indices = {
@@ -45,11 +93,6 @@ off_indices = {
     'o2': np.array([], dtype=int), # off indices in hidden layer 1
     'o3': np.array([], dtype=int) # off indices in hidden layer 2
 }
-
-tuning_type = 'centrality' # tuning type:Centrality-based (default) or KL Divergence
-tuning_step = 1 # number of step(s) at which centrality-based tuning periodically takes place
-k_selected=1 # number of neurons selected to be tuned ('turned off') each round
-n_tuned_layers = 1 # number of layers to be tuned; a value of 2 means layers 2 and 3 (1st & 2nd hidden layers will be tuned)
 
 # Input data placeholder
 X = tf.placeholder("float", [None, n_input])
@@ -78,19 +121,18 @@ biases = {
 
 # Create the MLP 
 def multilayer_perceptron(x):
-    # Hidden fully connected layer with 256 neurons
-    layer_1 = tf.add(tf.matmul(x, weights['w1']), biases['b1'])
-    # Hidden fully connected layer with 256 neurons
-    layer_2 = tf.add(tf.matmul(layer_1, weights['w2']), biases['b2'])
-    # Output fully connected layer with a neuron for each class
-    out_layer = tf.matmul(layer_2, weights['w3']) + biases['b3']
+    layer_1 = get_layer(x, weights['w1'], biases['b1'], 'linear')
+    layer_2 = get_layer(layer_1, weights['w2'], biases['b2'], 'linear')
+    out_layer = get_layer(layer_2, weights['w3'], biases['b3'], 'linear')
+    
     return out_layer
 
 # Construct the model
 logits = multilayer_perceptron(X)
 
 # Neuron tuning tf operation
-neuron_tuning_op = tf.assign(weights['w2'], tuned_weights['w2'])
+neuron_tuning_op2 = tf.assign(weights['w2'], tuned_weights['w2'])
+neuron_tuning_op3 = tf.assign(weights['w3'], tuned_weights['w3'])
 
 # Define loss function and optimizer
 loss_op = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=Y))
@@ -100,43 +142,6 @@ train_op = optimizer.minimize(loss_op)
 # Initialize the variables
 init = tf.global_variables_initializer()
 
-# Parse input arguments
-# sample command with tuning: python tune_weights.py --tune 1
-parser = argparse.ArgumentParser(description="Argument Parser")
-parser.add_argument("--ts", type=int, help="Tuning step size")
-parser.add_argument("--tt", help="Tuning type")
-parser.add_argument("--sd", type=int, help="Randomization seed")
-parser.add_argument("--ep", type=int, help="Number of epochs")
-parser.add_argument("--nt", type=int, help="Number of tuned layers")
-parser.add_argument("--ds", help="Dataset name")
-
-args = parser.parse_args()
-
-if args.ts:
-    tuning_step = args.ts
-    print("Centrality measure tuning step set to {}".format(tuning_step))
-
-if args.tt:
-    tuning_type = args.tt
-    print("Tuning type set to {}".format(n_tuned_layers))
-    
-if args.sd:
-    seed = args.sd
-    set_seed(seed) # set same seed in helper
-    print("Randomization seed set to {}".format(seed))
-
-if args.ep:
-    training_epochs = args.ep
-    print("Epochs set to {}".format(training_epochs))
-
-if args.nt:
-    n_tuned_layers = args.nt
-    print("Number of tuned layers set to {}".format(n_tuned_layers))
-
-if args.ds:
-    dataset_name = args.ds
-    print("Dataset set to {}".format(dataset_name))
-
 # load data
 X_tr, Y_tr, X_ts, Y_ts = read_dataset(dataset_name)
 
@@ -145,10 +150,14 @@ with tf.Session() as sess:
 
     print("Training has started.")
     
+    if(X_tr.shape[0] < 1000):
+        batch_size = X_tr.shape[0]
+        
+    total_batch = int(X_tr.shape[0]/batch_size) + (X_tr.shape[0]%batch_size != 0)
+    
     # Training cycle
     for epoch in range(1, training_epochs+1):
         avg_cost = 0.0
-        total_batch = int(X_tr.shape[0]/batch_size)+1
         
         start = time.time()
         print("\nEpoch:", '%04d' % (epoch))
@@ -177,10 +186,13 @@ with tf.Session() as sess:
                 # get a tensor with off_inds neurons turned off
                 tuned_weights['w'+str(l)] = tune_weights(off_indices['o'+str(l)], weights_dict, l)
                 print("Weight tuning done.")
-
-            # run neuron tunin operation
-            sess.run(neuron_tuning_op)
             
+            # run neuron tuning operation
+            if(n_tuned_layers == 1):
+                sess.run(neuron_tuning_op2)
+            elif(n_tuned_layers == 2):
+                sess.run([neuron_tuning_op2, neuron_tuning_op3])
+                
          # Loop over all batches
         for i in range(total_batch):            
             #batch_x, batch_y = mnist.train.next_batch(batch_size)

@@ -14,6 +14,17 @@ from scipy.stats import pearsonr
 
 seed = 1234
 
+# creates TF layers
+def get_layer(x, w, b, activ_fun):
+    tf_layer = tf.add(tf.matmul(x, w), b)
+    
+    if(activ_fun == 'sigmoid'):
+        tf_layer = tf.nn.sigmoid(tf_layer)
+    elif(activ_fun == 'softmax'):
+        tf_layer = tf.nn.softmax(tf_layer)
+    
+    return tf_layer
+
 # calculates KL divergence of two distributions
 def kl_div(empirical, target):
     if(abs(empirical.sum()-1) > 0.05 or abs(target.sum()-1) > 0.05):
@@ -204,7 +215,7 @@ def get_correlated_features(X_tr, Y_tr, X_ts, N):
     corr = np.apply_along_axis(pearsonr, 0, X_tr, Y_tr)[0]
     
     # select N columns with highest correlation with Y_tr
-    selected_columns = np.argsort(corr)[0:N]
+    selected_columns = np.flip(np.argsort(corr))[0:N]
     X_tr_selected = X_tr[:, selected_columns]
     X_ts_selected = X_ts[:, selected_columns]
 
