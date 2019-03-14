@@ -15,7 +15,7 @@ from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weig
 
 # Hyperparameters
 learning_rate = 0.001
-training_epochs = 300 #50
+training_epochs = 50 #300 #50
 batch_size = 100
 dataset_name = 'mnist'
 
@@ -119,20 +119,35 @@ biases = {
     'b3': tf.Variable(tf.random_normal([n_classes]))
 }
 
-# Create the MLP 
-def multilayer_perceptron(x):
-    layer_1 = get_layer(x, weights['w1'], biases['b1'], 'linear')
-    layer_2 = get_layer(layer_1, weights['w2'], biases['b2'], 'linear')
-    out_layer = get_layer(layer_2, weights['w3'], biases['b3'], 'linear')
-    
-    return out_layer
+activ_funcs = ['linear', 'linear', 'linear']
 
-# Construct the model
-logits = multilayer_perceptron(X)
+# Create the MLP
+# x is the input tensor, activ_funs is a list of activation functions
+# weights and biases are dictionaries with keys = 'w1'/'b1', 'w2'/'b2', etc.
+def multilayer_perceptron(x, weights, biases, activ_funcs):
+    layers = []
+    
+    for l in range(len(activ_funcs)):
+        if(l == 0):
+            input_tensor = x
+        else:
+            input_tensor = layers[l-1]
+            
+        weights_key = 'w' + str(l+1)
+        biases_key = 'b' + str(l+1)
+        activation_function = activ_funcs[l]
+        
+        layer = get_layer(input_tensor, weights[weights_key], biases[biases_key], activation_function)
+        layers.append(layer)
+
+    return layers[-1] # return the last tensor, i.e. output layer
 
 # Neuron tuning tf operation
 neuron_tuning_op2 = tf.assign(weights['w2'], tuned_weights['w2'])
 neuron_tuning_op3 = tf.assign(weights['w3'], tuned_weights['w3'])
+
+# Construct the model
+logits = multilayer_perceptron(X, weights, biases, activ_funcs)
 
 # Define loss function and optimizer
 loss_op = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=Y))
