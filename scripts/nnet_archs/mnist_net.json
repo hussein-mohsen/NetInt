@@ -1,0 +1,7 @@
+{
+    "layers": {
+		"types": ["ff", "ff", "ff", "ff"],
+		"sizes": [784, 512, 512, 10],
+		"activ_funcs": ["linear", "linear", "linear"]
+    }
+}

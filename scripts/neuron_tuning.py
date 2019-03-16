@@ -1,33 +1,31 @@
-from __future__ import print_function
-
 import argparse
 
 import os
 import time
 import random
 
+import json
+
 import numpy as np
 from numpy import dtype, shape
 
 import tensorflow as tf
 
-from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph, read_dataset, get_next_batch, set_seed, get_layer
+from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph, read_dataset, get_next_batch, get_next_even_batch, set_seed, get_layer, get_vardict, get_arrdict
+from numpy.random.mtrand import shuffle
+
+#from tensorflow.examples.tutorials.mnist import input_data
+#mnist = input_data.read_data_sets("MNIST_data/", one_hot=True)
 
 # Hyperparameters
 learning_rate = 0.001
 training_epochs = 50 #300 #50
 batch_size = 100
+next_batch_start = 0
+
 dataset_name = 'mnist'
-
-n_input = 784 # MNIST data input (img shape: 28*28)
-n_hidden_1 = 512
-n_hidden_2 = 512
-n_classes = 10 # MNIST total classes (0-9 digits)
-
-#n_input = 932 # MNIST data input (img shape: 28*28)
-#n_hidden_1 = 400
-#n_hidden_2 = 100
-#n_classes = 2 # MNIST total classes (0-9 digits)
+input_json_dir = 'nnet_archs/'
+input_json = 'mnist_net.json'
 
 # Set random seed for replication
 seed=1234
@@ -41,7 +39,7 @@ tuning_type = 'centrality' # tuning type:Centrality-based (default) or KL Diverg
 tuning_step = 1 # number of step(s) at which centrality-based tuning periodically takes place
 k_selected=1 # number of neurons selected to be tuned ('turned off') each round
 n_tuned_layers = 1 # number of layers to be tuned; a value of 2 means layers 2 and 3 (1st & 2nd hidden layers will be tuned)
-
+    
 # Parse input arguments
 # sample command with tuning: python tune_weights.py --tune 1
 parser = argparse.ArgumentParser(description="Argument Parser")
@@ -51,6 +49,7 @@ parser.add_argument("--sd", type=int, help="Randomization seed")
 parser.add_argument("--ep", type=int, help="Number of epochs")
 parser.add_argument("--nt", type=int, help="Number of tuned layers")
 parser.add_argument("--ds", help="Dataset name")
+parser.add_argument("--ij", help="Input network JSON file")
 
 args = parser.parse_args()
 
@@ -78,53 +77,41 @@ if args.nt:
 if args.ds:
     dataset_name = args.ds
     print("Dataset set to {}".format(dataset_name))
+
+if args.ij:
+    input_json = args.ij
+    print("Input JSON file set to {}".format(input_json))
+
+with open(input_json_dir+input_json) as json_file:    
+    json_data = json.load(json_file)
+
+    layer_sizes = json_data['layers']['sizes'] # In, h1, h2, ..., Out
+    n_input = layer_sizes[0]
+    n_classes = layer_sizes[-1]
     
-# Indices of available neurons in input and hidden layers.
-# Updated whenever centrality-based tuning takes place by eliminating neurons 'turned off'
-avail_indices = {
-    'a1': np.array(range(n_input)), # available neuron indices in input layer
-    'a2': np.array(range(n_hidden_1)), # available neuron indices in hidden layer 1
-    'a3': np.array(range(n_hidden_2)) # available neuron indices in hidden layer 2
-}
+    layer_types = json_data['layers']['types'] # In, h1, h2, ..., Out
+    activ_funcs = json_data['layers']['activ_funcs'] # h1, h2, ..., Out
 
 # Complement available indices above. Updated at each neuron tuning step.
-off_indices = {
-    'o1': np.array([], dtype=int), # off indices in input layer
-    'o2': np.array([], dtype=int), # off indices in hidden layer 1
-    'o3': np.array([], dtype=int) # off indices in hidden layer 2
-}
+off_indices = get_arrdict(layer_sizes, 'empty', 'o')
+avail_indices = get_arrdict(layer_sizes, 'range', 'a')
 
 # Input data placeholder
 X = tf.placeholder("float", [None, n_input])
 Y = tf.placeholder("float", [None, n_classes])
-
+    
 # Store layers weight & bias
-weights = {
-    'w1': tf.Variable(tf.random_normal([n_input, n_hidden_1])),
-    'w2': tf.Variable(tf.random_normal([n_hidden_1, n_hidden_2])),
-    'w3': tf.Variable(tf.random_normal([n_hidden_2, n_classes]))
-}
+weight_init = 'normal'
+bias_init = 'normal'
 
-# tensors with tuned weights (weights above with incoming 
-# and outcoming weights of tuned neurons set to 0 values)
-tuned_weights = {
-    'w1': tf.Variable(tf.zeros([n_input, n_hidden_1], dtype=tf.float32)),
-    'w2': tf.Variable(tf.zeros([n_hidden_1, n_hidden_2], dtype=tf.float32)),
-    'w3': tf.Variable(tf.zeros([n_hidden_2, n_classes], dtype=tf.float32))
-}
-
-biases = {
-    'b1': tf.Variable(tf.random_normal([n_hidden_1])),
-    'b2': tf.Variable(tf.random_normal([n_hidden_2])),
-    'b3': tf.Variable(tf.random_normal([n_classes]))
-}
-
-activ_funcs = ['linear', 'linear', 'linear']
+weights = get_vardict(layer_sizes, weight_init, 'weight', 'w')
+tuned_weights = get_vardict(layer_sizes, 'zeros', 'weight', 'w')
+biases = get_vardict(layer_sizes, bias_init, 'bias', 'b')
 
 # Create the MLP
 # x is the input tensor, activ_funs is a list of activation functions
 # weights and biases are dictionaries with keys = 'w1'/'b1', 'w2'/'b2', etc.
-def multilayer_perceptron(x, weights, biases, activ_funcs):
+def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
     layers = []
     
     for l in range(len(activ_funcs)):
@@ -136,8 +123,9 @@ def multilayer_perceptron(x, weights, biases, activ_funcs):
         weights_key = 'w' + str(l+1)
         biases_key = 'b' + str(l+1)
         activation_function = activ_funcs[l]
+        layer_type = layer_types[l]
         
-        layer = get_layer(input_tensor, weights[weights_key], biases[biases_key], activation_function)
+        layer = get_layer(input_tensor, weights[weights_key], biases[biases_key], activation_function, layer_type)
         layers.append(layer)
 
     return layers[-1] # return the last tensor, i.e. output layer
@@ -147,7 +135,7 @@ neuron_tuning_op2 = tf.assign(weights['w2'], tuned_weights['w2'])
 neuron_tuning_op3 = tf.assign(weights['w3'], tuned_weights['w3'])
 
 # Construct the model
-logits = multilayer_perceptron(X, weights, biases, activ_funcs)
+logits = multilayer_perceptron(X, weights, biases, activ_funcs, layer_types)
 
 # Define loss function and optimizer
 loss_op = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=Y))
@@ -176,7 +164,7 @@ with tf.Session() as sess:
         
         start = time.time()
         print("\nEpoch:", '%04d' % (epoch))
-
+        
         # centrality-based neuron tuning step
         if(epoch % tuning_step == 0 and args.ts):
             weights_dict = sess.run(weights)
@@ -211,8 +199,9 @@ with tf.Session() as sess:
          # Loop over all batches
         for i in range(total_batch):            
             #batch_x, batch_y = mnist.train.next_batch(batch_size)
-            batch_x, batch_y = get_next_batch(X_tr, Y_tr, i, batch_size)
-
+            #batch_x, batch_y = get_next_batch(X_tr, Y_tr, i, batch_size, seed=seed)
+            batch_x, batch_y, next_batch_start = get_next_even_batch(X_tr, Y_tr, next_batch_start, batch_size, epoch)
+            
             # Run optimization op (backprop) and cost op (to get loss value)
             _, c = sess.run([train_op, loss_op], feed_dict={X: batch_x,
                                                             Y: batch_y})

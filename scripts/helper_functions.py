@@ -15,13 +15,17 @@ from scipy.stats import pearsonr
 seed = 1234
 
 # creates TF layers
-def get_layer(x, w, b, activ_fun):
-    tf_layer = tf.add(tf.matmul(x, w), b)
-    
-    if(activ_fun == 'sigmoid'):
-        tf_layer = tf.nn.sigmoid(tf_layer)
-    elif(activ_fun == 'softmax'):
-        tf_layer = tf.nn.softmax(tf_layer)
+def get_layer(x, w, b, activ_fun, layer_type='ff'):
+    if(layer_type == 'ff'):
+        tf_layer = tf.add(tf.matmul(x, w), b) # linear layer
+        
+        if(activ_fun == 'sigmoid'):
+            tf_layer = tf.nn.sigmoid(tf_layer)
+        elif(activ_fun == 'softmax'):
+            tf_layer = tf.nn.softmax(tf_layer)
+            
+    else:
+        print("Error: Invalid layer type")
     
     return tf_layer
 
@@ -186,7 +190,7 @@ def read_dataset(dataset_name='mnist', shiffle=True):
         X_ts = mnist.test.images
         Y_ts = mnist.test.labels
     elif(dataset_name == 'psychencode'):
-        psychencode_filename = '../data/DSPN_bpd_large/datasets/bpd_data1.mat'
+        psychencode_filename = '../data/psychencode/DSPN_bpd_large/datasets/bpd_data1.mat'
         psychencode_data = loadmat(psychencode_filename)
         
         X_tr = psychencode_data['X_Gene_tr']
@@ -199,14 +203,15 @@ def read_dataset(dataset_name='mnist', shiffle=True):
         
         if(select_correlated_cols):
             X_tr, X_ts = get_correlated_features(X_tr, Y_tr, X_ts, N)
-            
+
+    # shuffle data if necessary, ie at every new turn over dataset:
     if shuffle:
         data_order = np.arange(X_tr.shape[0])
         np.random.shuffle(data_order)
-        
-        X_tr = X_tr[data_order, :]
-        Y_tr = Y_tr[data_order, :]
 
+        X_tr = X_tr[data_order]
+        Y_tr = Y_tr[data_order]
+        
     return X_tr, Y_tr, X_ts, Y_ts
 
 # return N columns with highest correlation with the label in training data
@@ -228,6 +233,37 @@ def set_seed(seed=1234):
     random.seed(seed)
     print("Seeds in helper functions set to {}".format(seed))
     
+# epochs start at 1, index in data at 0
+# Method and code structure from mnist.next_batch
+def get_next_even_batch(X_tr, Y_tr, start, batch_size, epoch, seed=seed, shuffle=True):
+    end = start + batch_size
+            
+    if end > X_tr.shape[0]:
+        N_remaining_points = X_tr.shape[0] - start
+        remaining_points = X_tr[start:X_tr.shape[0]]
+        remaining_labels = Y_tr[start:Y_tr.shape[0]]
+        
+        if shuffle:
+            data_order = np.arange(X_tr.shape[0])
+            np.random.shuffle(data_order)
+
+            X_tr = X_tr[data_order]
+            Y_tr = Y_tr[data_order]
+        
+        N_new_points = batch_size - N_remaining_points
+        new_points = X_tr[0:N_new_points]
+        new_labels = Y_tr[0:N_new_points]
+        
+        batch_x = np.concatenate((remaining_points, new_points), axis=0)
+        batch_y = np.concatenate((remaining_labels, new_labels), axis=0)
+        next_start = N_new_points
+    else:
+        batch_x = X_tr[start:end]
+        batch_y = Y_tr[start:end]
+        next_start = end % X_tr.shape[0]
+
+    return batch_x, batch_y, next_start
+
 # batch_index starts at 0
 def get_next_batch(X_tr, Y_tr, batch_index, batch_size, seed=seed):
     start = batch_index * batch_size
@@ -240,3 +276,44 @@ def get_next_batch(X_tr, Y_tr, batch_index, batch_size, seed=seed):
     batch_y = Y_tr[start:end, :]
     
     return batch_x, batch_y
+
+# layers size and arr_init define the initialization configuration
+# Example output: For prefix 'o', o1 corresponds for Input layer, o2 for hidden layer 1, etc
+def get_arrdict(layer_sizes, arr_init, prefix):
+    dict = {}
+    
+    n_layers = len(layer_sizes)
+    for l in range(0, n_layers):
+        arr_name = prefix + str(l+1)
+        
+        if(arr_init == 'empty'):
+            dict[arr_name] = np.array([], dtype=int)
+        elif arr_init == 'range':
+            n = layer_sizes[l]
+            dict[arr_name] = np.array(range(n))
+
+    return dict
+
+# layers size and var_init define the architecture and initialization configuration of weights and biases in the network
+# variable type is either weights (2D) or biases (1D) and prefix determines name of resulting variables
+# Example output: For prefix 'w', w1 corresponds for weights between input and first hidden layers, etc.
+def get_vardict(layer_sizes, var_init, var_type, prefix):
+    dict = {}
+    
+    n_layers = len(layer_sizes)
+    for l in range(1, n_layers):
+        var_name = prefix + str(l)
+        n_origin = layer_sizes[l-1]
+        n_dest = layer_sizes[l]
+        
+        if(var_type == 'bias'):
+            var_shape = [n_dest]
+        elif(var_type == 'weight'):
+            var_shape = [n_origin, n_dest]
+
+        if(var_init == 'normal'):
+            dict[var_name] = tf.Variable(tf.random_normal(var_shape))
+        elif(var_init == 'zeros'):
+            dict[var_name] = tf.Variable(tf.zeros(var_shape, dtype=tf.float32))
+
+    return dict
