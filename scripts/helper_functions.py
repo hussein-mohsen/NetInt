@@ -5,6 +5,7 @@ import numpy as np
 
 import tensorflow as tf
 import networkx as nx
+import collections
 
 from sklearn.preprocessing import minmax_scale
 from numpy.random.mtrand import shuffle
@@ -12,7 +13,36 @@ from numpy.random.mtrand import shuffle
 from scipy.io import loadmat
 from scipy.stats import pearsonr
 
+from tensorflow.contrib.learn.python.learn.datasets.mnist import read_data_sets
+from tensorflow.contrib.learn.python.learn.datasets.base import Datasets
+
+
+from helper_objects import DataSet
+from tensorflow.python.framework import dtypes
+
 seed = 1234
+
+# Create the MLP
+# x is the input tensor, activ_funs is a list of activation functions
+# weights and biases are dictionaries with keys = 'w1'/'b1', 'w2'/'b2', etc.
+def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
+    layers = []
+    
+    for l in range(len(activ_funcs)):
+        if(l == 0):
+            input_tensor = x
+        else:
+            input_tensor = layers[l-1]
+            
+        weights_key = 'w' + str(l+1)
+        biases_key = 'b' + str(l+1)
+        activation_function = activ_funcs[l]
+        layer_type = layer_types[l]
+        
+        layer = get_layer(input_tensor, weights[weights_key], biases[biases_key], activation_function, layer_type)
+        layers.append(layer)
+
+    return layers[-1] # return the last tensor, i.e. output layer
 
 # creates TF layers
 def get_layer(x, w, b, activ_fun, layer_type='ff'):
@@ -43,7 +73,7 @@ def totality_scale(values):
     return values/total
 
 # scales empirical matrix to [0,1] + shift_factor and calculate KL div with Gaussian(mn=0, sd=0.1) + shift_factor
-def calculate_scaled_kl_div(input_matrix, shift_factor=5, target_dist='Gaussian'):
+def calculate_scaled_kl_div(input_matrix, shift_factor=5, target_dist='Gaussian', seed=seed):
     #input_matrix = minmax_scale(input_matrix, feature_range=(0,1), axis=1) +0.001 #+ shift_factor
     #target_dist = np.random.normal(1, 0.1, (1, input_matrix.shape[0])) +0.001 #+ shift_factor
     
@@ -180,44 +210,37 @@ def tune_weights(off_indices, current_weights, layer):
     return tf.convert_to_tensor(current_weights['w'+str(layer)], dtype=tf.float32)
 
 # reads data
-def read_dataset(dataset_name='mnist', shiffle=True):
+def read_dataset(dataset_name='mnist', shuffle=True):
     if(dataset_name == 'mnist'):
-        from tensorflow.examples.tutorials.mnist import input_data
-        mnist = input_data.read_data_sets('../data/MNIST_data/', one_hot=True)
+        mnist = read_data_sets('../data/MNIST_data/', one_hot=True)
         
-        X_tr = mnist.train.images
-        Y_tr = mnist.train.labels
-        X_ts = mnist.test.images
-        Y_ts = mnist.test.labels
+        X_tr, Y_tr = mnist.train.images, mnist.train.labels
+        X_val, Y_val = mnist.validation.images, mnist.validation.labels
+        X_ts, Y_ts = mnist.test.images, mnist.test.labels
     elif(dataset_name == 'psychencode'):
         psychencode_filename = '../data/psychencode/DSPN_bpd_large/datasets/bpd_data1.mat'
         psychencode_data = loadmat(psychencode_filename)
         
-        X_tr = psychencode_data['X_Gene_tr']
-        Y_tr = psychencode_data['X_Trait_tr']
-        X_ts = psychencode_data['X_Gene_te']
-        Y_ts = psychencode_data['X_Trait_te']
+        X_tr, Y_tr = psychencode_data['X_Gene_tr'], psychencode_data['X_Trait_tr']
+        X_val, Y_val = None, None
+        X_ts, Y_ts = psychencode_data['X_Gene_te'], psychencode_data['X_Trait_te']
     
         select_correlated_cols = True
         N = 932
         
         if(select_correlated_cols):
             X_tr, X_ts = get_correlated_features(X_tr, Y_tr, X_ts, N)
+    
+    train = DataSet(X_tr, Y_tr)
+    validation = DataSet(X_val, Y_val)
+    test = DataSet(X_ts, Y_ts)
 
-    # shuffle data if necessary, ie at every new turn over dataset:
-    if shuffle:
-        data_order = np.arange(X_tr.shape[0])
-        np.random.shuffle(data_order)
-
-        X_tr = X_tr[data_order]
-        Y_tr = Y_tr[data_order]
-        
-    return X_tr, Y_tr, X_ts, Y_ts
+    return Datasets(train=train, validation=validation, test=test)  
 
 # return N columns with highest correlation with the label in training data
 def get_correlated_features(X_tr, Y_tr, X_ts, N):
     Y_tr = np.argmax(Y_tr, axis=1)
-    corr = np.apply_along_axis(pearsonr, 0, X_tr, Y_tr)[0]
+    corr = abs(np.apply_along_axis(pearsonr, 0, X_tr, Y_tr)[0])
     
     # select N columns with highest correlation with Y_tr
     selected_columns = np.flip(np.argsort(corr))[0:N]
@@ -243,7 +266,7 @@ def get_next_even_batch(X_tr, Y_tr, start, batch_size, epoch, seed=seed, shuffle
         remaining_points = X_tr[start:X_tr.shape[0]]
         remaining_labels = Y_tr[start:Y_tr.shape[0]]
         
-        if shuffle:
+        if shuffle == True:
             data_order = np.arange(X_tr.shape[0])
             np.random.shuffle(data_order)
 
@@ -265,7 +288,7 @@ def get_next_even_batch(X_tr, Y_tr, start, batch_size, epoch, seed=seed, shuffle
     return batch_x, batch_y, next_start
 
 # batch_index starts at 0
-def get_next_batch(X_tr, Y_tr, batch_index, batch_size, seed=seed):
+def get_next_batch(X_tr, Y_tr, batch_index, batch_size, seed=seed, shuffle=True):
     start = batch_index * batch_size
     end = start + batch_size - 1
     

@@ -11,7 +11,7 @@ from numpy import dtype, shape
 
 import tensorflow as tf
 
-from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph, read_dataset, get_next_batch, get_next_even_batch, set_seed, get_layer, get_vardict, get_arrdict
+from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph, read_dataset, get_next_batch, get_next_even_batch, set_seed, get_layer, get_vardict, get_arrdict, multilayer_perceptron
 from numpy.random.mtrand import shuffle
 
 #from tensorflow.examples.tutorials.mnist import input_data
@@ -19,9 +19,8 @@ from numpy.random.mtrand import shuffle
 
 # Hyperparameters
 learning_rate = 0.001
-training_epochs = 50 #300 #50
+training_epochs = 300
 batch_size = 100
-next_batch_start = 0
 
 dataset_name = 'mnist'
 input_json_dir = 'nnet_archs/'
@@ -55,6 +54,7 @@ args = parser.parse_args()
 
 if args.ts:
     tuning_step = args.ts
+    display_step = tuning_step
     print("Tuning step set to {}".format(tuning_step))
 
 if args.tt:
@@ -76,7 +76,9 @@ if args.nt:
 
 if args.ds:
     dataset_name = args.ds
+    input_json = dataset_name+'_net.json'
     print("Dataset set to {}".format(dataset_name))
+    print("Input JSON file set to {}".format(input_json))
 
 if args.ij:
     input_json = args.ij
@@ -108,28 +110,6 @@ weights = get_vardict(layer_sizes, weight_init, 'weight', 'w')
 tuned_weights = get_vardict(layer_sizes, 'zeros', 'weight', 'w')
 biases = get_vardict(layer_sizes, bias_init, 'bias', 'b')
 
-# Create the MLP
-# x is the input tensor, activ_funs is a list of activation functions
-# weights and biases are dictionaries with keys = 'w1'/'b1', 'w2'/'b2', etc.
-def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
-    layers = []
-    
-    for l in range(len(activ_funcs)):
-        if(l == 0):
-            input_tensor = x
-        else:
-            input_tensor = layers[l-1]
-            
-        weights_key = 'w' + str(l+1)
-        biases_key = 'b' + str(l+1)
-        activation_function = activ_funcs[l]
-        layer_type = layer_types[l]
-        
-        layer = get_layer(input_tensor, weights[weights_key], biases[biases_key], activation_function, layer_type)
-        layers.append(layer)
-
-    return layers[-1] # return the last tensor, i.e. output layer
-
 # Neuron tuning tf operation
 neuron_tuning_op2 = tf.assign(weights['w2'], tuned_weights['w2'])
 neuron_tuning_op3 = tf.assign(weights['w3'], tuned_weights['w3'])
@@ -145,8 +125,9 @@ train_op = optimizer.minimize(loss_op)
 # Initialize the variables
 init = tf.global_variables_initializer()
 
-# load data
-X_tr, Y_tr, X_ts, Y_ts = read_dataset(dataset_name)
+D = read_dataset(dataset_name, shuffle=False)
+X_tr, Y_tr = D.train.points, D.train.labels
+X_ts, Y_ts = D.test.points, D.test.labels
 
 with tf.Session() as sess:
     sess.run(init)
@@ -155,18 +136,18 @@ with tf.Session() as sess:
     
     if(X_tr.shape[0] < 1000):
         batch_size = X_tr.shape[0]
+        print("Batch size set to {}".format(batch_size))
         
-    total_batch = int(X_tr.shape[0]/batch_size) + (X_tr.shape[0]%batch_size != 0)
+    total_batch = int(X_tr.shape[0]/batch_size) # + (X_tr.shape[0]%batch_size != 0)
     
     # Training cycle
     for epoch in range(1, training_epochs+1):
         avg_cost = 0.0
         
         start = time.time()
-        print("\nEpoch:", '%04d' % (epoch))
         
         # centrality-based neuron tuning step
-        if(epoch % tuning_step == 0 and args.ts):
+        if(epoch % tuning_step == 0 and (args.ts or args.tt)):
             weights_dict = sess.run(weights)
 
             # choose layers on which tuning is executed
@@ -197,12 +178,9 @@ with tf.Session() as sess:
                 sess.run([neuron_tuning_op2, neuron_tuning_op3])
                 
          # Loop over all batches
-        for i in range(total_batch):            
-            #batch_x, batch_y = mnist.train.next_batch(batch_size)
-            #batch_x, batch_y = get_next_batch(X_tr, Y_tr, i, batch_size, seed=seed)
-            batch_x, batch_y, next_batch_start = get_next_even_batch(X_tr, Y_tr, next_batch_start, batch_size, epoch)
-            
-            # Run optimization op (backprop) and cost op (to get loss value)
+        for i in range(total_batch):
+            batch_x, batch_y = D.train.next_batch(batch_size)
+
             _, c = sess.run([train_op, loss_op], feed_dict={X: batch_x,
                                                             Y: batch_y})
             
@@ -213,6 +191,7 @@ with tf.Session() as sess:
             
         # Display logs per epoch step
         if epoch % display_step == 0:
+            print("\nEpoch:", '%04d' % (epoch))
             print('Execution Time: {0} {1}, Cost: {2}'.format(1000*(end-start), 'ms', avg_cost))
             
     print("Optimization Done.")
