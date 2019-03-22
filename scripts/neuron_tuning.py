@@ -34,6 +34,7 @@ random.seed(seed)
 display_step = 1
 
 # Tuning parameters
+shift_type = 'min'
 tuning_type = 'centrality' # tuning type:Centrality-based (default) or KL Divergence
 tuning_step = 1 # number of step(s) at which centrality-based tuning periodically takes place
 k_selected=1 # number of neurons selected to be tuned ('turned off') each round
@@ -49,6 +50,7 @@ parser.add_argument("--ep", type=int, help="Number of epochs")
 parser.add_argument("--nt", type=int, help="Number of tuned layers")
 parser.add_argument("--ds", help="Dataset name")
 parser.add_argument("--ij", help="Input network JSON file")
+parser.add_argument("--st", help="Distribution shift type") # shift type of the weight distribution to positive
 
 args = parser.parse_args()
 
@@ -84,6 +86,10 @@ if args.ij:
     input_json = args.ij
     print("Input JSON file set to {}".format(input_json))
 
+if args.st:
+    shift_type = args.st
+    print("Distribution shift type set to {}".format(shift_type))
+    
 with open(input_json_dir+input_json) as json_file:    
     json_data = json.load(json_file)
 
@@ -161,7 +167,7 @@ with tf.Session() as sess:
             for l in range(2, tuning_layer_end):
                 print("Tuning on layer {}".format(l))        
                 # create weight graph
-                current_off_inds = get_off_inds(weights_dict, avail_indices['a'+str(l)], layer_index=l, k_selected=k_selected, tuning_type=tuning_type)
+                current_off_inds = get_off_inds(weights_dict, avail_indices['a'+str(l)], layer_index=l, k_selected=k_selected, tuning_type=tuning_type, shift_type=shift_type)
                 
                 # update available and off_indices (i.e. indices of tuned neurons)
                 avail_indices['a'+str(l)] = np.delete(avail_indices['a'+str(l)], current_off_inds)
