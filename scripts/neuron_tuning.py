@@ -34,8 +34,9 @@ random.seed(seed)
 display_step = 1
 
 # Tuning parameters
-shift_type = 'min'
 tuning_type = 'centrality' # tuning type:Centrality-based (default) or KL Divergence
+shift_type = 'min' # type of shifting the target distribution to positive values in KL div-based tuning
+target_distribution = 'normal' # target distribution in KL div-based tuning
 tuning_step = 1 # number of step(s) at which centrality-based tuning periodically takes place
 k_selected=1 # number of neurons selected to be tuned ('turned off') each round
 n_tuned_layers = 1 # number of layers to be tuned; a value of 2 means layers 2 and 3 (1st & 2nd hidden layers will be tuned)
@@ -51,6 +52,7 @@ parser.add_argument("--nt", type=int, help="Number of tuned layers")
 parser.add_argument("--ds", help="Dataset name")
 parser.add_argument("--ij", help="Input network JSON file")
 parser.add_argument("--st", help="Distribution shift type") # shift type of the weight distribution to positive
+parser.add_argument("--td", help="Target distirubion for KL-divergence based comparisons.") # shift type of the weight distribution to positive
 
 args = parser.parse_args()
 
@@ -89,7 +91,11 @@ if args.ij:
 if args.st:
     shift_type = args.st
     print("Distribution shift type set to {}".format(shift_type))
-    
+
+if args.td:
+    target_distribution = args.td
+    print("Target distribution set to {}".format(target_distribution))
+        
 with open(input_json_dir+input_json) as json_file:    
     json_data = json.load(json_file)
 
@@ -167,7 +173,7 @@ with tf.Session() as sess:
             for l in range(2, tuning_layer_end):
                 print("Tuning on layer {}".format(l))        
                 # create weight graph
-                current_off_inds = get_off_inds(weights_dict, avail_indices['a'+str(l)], layer_index=l, k_selected=k_selected, tuning_type=tuning_type, shift_type=shift_type)
+                current_off_inds = get_off_inds(weights_dict, avail_indices['a'+str(l)], layer_index=l, k_selected=k_selected, tuning_type=tuning_type, shift_type=shift_type, target_distribution=target_distribution)
                 
                 # update available and off_indices (i.e. indices of tuned neurons)
                 avail_indices['a'+str(l)] = np.delete(avail_indices['a'+str(l)], current_off_inds)

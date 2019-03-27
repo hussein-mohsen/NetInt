@@ -16,6 +16,7 @@ from scipy.stats import pearsonr
 from tensorflow.contrib.learn.python.learn.datasets.mnist import read_data_sets
 from tensorflow.contrib.learn.python.learn.datasets.base import Datasets
 
+from scipy.stats import powerlaw
 
 from helper_objects import DataSet
 from tensorflow.python.framework import dtypes
@@ -73,31 +74,42 @@ def totality_scale(values):
     return values/total
 
 # scales empirical matrix to [0,1] and calculate KL div with Gaussian(mn=0, sd=0.1) scaled to [0,1] per totality_score
-def calculate_scaled_kl_div(input_matrix, shift_factor=5, target_dist='Gaussian', shift_type= 'min', seed=seed):
+def calculate_scaled_kl_div(input_matrix, shift_factor=5, target_dist='Gaussian', shift_type= 'min', target_distribution='normal', seed=seed):
     if shift_type == 'min':
         input_matrix += abs(input_matrix.min()) + 0.001
     elif shift_type == 'abs':
         input_matrix = abs(input_matrix) + 0.001
-    
+    else:
+        raise Exception('Invalid shift type.')
+
+    if target_distribution == 'normal':
+        target_dist = np.random.normal(1, 0.1, (1, input_matrix.shape[1]))
+    elif target_distribution == 'power': # power law distribution
+        a = 1.5
+        x = np.linspace(powerlaw.ppf(0.01, a), powerlaw.ppf(0.99, a), input_matrix.shape[1])
+        target_dist = np.asarray(powerlaw.pdf(x, a, input_matrix.shape[1]))
+    else:
+        raise Exception('Invalid target distribution.')
+
     input_matrix = np.apply_along_axis(totality_scale, 1, input_matrix)
-    target_dist = totality_scale(np.random.normal(1, 0.1, (1, input_matrix.shape[1])))
+    target_dist = totality_scale(target_dist)
 
     kl_values = np.apply_along_axis(kl_div, 1, input_matrix, target_dist)
     return kl_values
 
 # calculates KL divergence from a target distribution for incoming and outcoming weight distributions
 # KL calculated after min-max scaling to [0, 1] + eps; returns averaged incoming and outcoming scores for each neuron
-def calculate_kl_div_layer_values(weights_dict, layer_index, target_dist='Gaussian', shift_type='min'):    
+def calculate_kl_div_layer_values(weights_dict, layer_index, target_dist='Gaussian', shift_type='min', target_distribution='normal'):    
     if layer_index > len(weights_dict): # output layer or erroneous index
         raise Exception('Layer index is out of bounds.')
     else:
         outcoming_weights = weights_dict['w'+str(layer_index)]
-        kl_values = calculate_scaled_kl_div(outcoming_weights, shift_type=shift_type)
+        kl_values = calculate_scaled_kl_div(outcoming_weights, shift_type=shift_type, target_distribution=target_distribution)
         return kl_values
     
         if layer_index > 1:
             incoming_weights = weights_dict['w'+str(layer_index-1)]
-            incoming_kl_values = calculate_scaled_kl_div(incoming_weights, axis=1, shift_type=shift_type)
+            incoming_kl_values = calculate_scaled_kl_div(incoming_weights, axis=1, shift_type=shift_type, target_distribution=target_distribution)
             kl_values = (kl_values + incoming_kl_values) / 2
             
     return kl_values
@@ -120,7 +132,7 @@ def get_layer_inds(boundaries, index):
 # tuning_type: 'centrality' (default: betweenness centrality) 
 #              'kl_div' (default: with Gaussian)   
 #              'random': 
-def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[], k_selected=4, tuning_type='centrality', dt=[('weight', float)], shift_type='min'):    
+def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[], k_selected=4, tuning_type='centrality', dt=[('weight', float)], shift_type='min', target_distribution='normal'):    
     if tuning_type == 'random': # random selection of indices
         select_inds = random.sample(range(len(avail_inds)), k_selected) # indices within avail_inds to be turned off        
     else:
@@ -135,7 +147,7 @@ def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[], k_selecte
         elif tuning_type == 'kl_div':
             # calculate KL divergence from a target distribution (default: Gaussian)
             print("Calculating KL-divergence values...")
-            values = calculate_kl_div_layer_values(weights_dict, layer_index, target_dist='Gaussian', shift_type=shift_type)
+            values = calculate_kl_div_layer_values(weights_dict, layer_index, target_dist='Gaussian', shift_type=shift_type, target_distribution=target_distribution)
         else:
             raise Exception('Invalid tuning type value.')
             
