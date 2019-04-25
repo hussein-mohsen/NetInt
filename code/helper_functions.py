@@ -16,6 +16,7 @@ from scipy.stats import pearsonr
 from tensorflow.contrib.learn.python.learn.datasets.mnist import read_data_sets
 from tensorflow.contrib.learn.python.learn.datasets.base import Datasets
 
+from scipy import stats
 from scipy.stats import powerlaw
 
 from helper_objects import DataSet
@@ -62,19 +63,40 @@ def get_layer(x, w, b, activ_fun, layer_type='ff'):
 
 # calculates KL divergence of two distributions
 def kl_div(empirical, target):
+    print("Empirical Sum: "+str(empirical.sum()))
+    print("Target Sum: "+str(target.sum()))
+    
     if(abs(empirical.sum()-1) > 0.05 or abs(target.sum()-1) > 0.05):
-        print("Warning: distributions do not sum up to 1")
+        print("Warning: one or more distributions do not sum up to 1")
         
     kl_div_value = (empirical * np.log(empirical/target)).sum()
     return kl_div_value
+
+# calculate KS test to compare distance between CDFs
+def ks_test(empirical, target_distribution='norm', metric='D'):
+    if(abs(empirical.sum()-1) > 0.05):
+        print("Warning: empirical distribution does not sum up to 1")
+
+    # set cdf arguments
+    if target_distribution == 'norm':
+        distribution_args = (0, 1) # (loc, scale)
+    elif target_distribution == 'powerlaw':
+        distribution_args = (1.5, 0, 1) # (a, loc, scale)
+
+    ks_results = stats.kstest(empirical, target_distribution, args=distribution_args)
+    
+    if metric == 'D':
+        return ks_results[0]
+    elif metric == 'p_value':
+        return ks_results[1]
 
 # scales a values s.t. sum = 1
 def totality_scale(values):
     total = values.sum()
     return values/total
 
-# scales empirical matrix to [0,1] and calculate KL div with Gaussian(mn=0, sd=0.1) scaled to [0,1] per totality_score
-def calculate_scaled_kl_div(input_matrix, shift_factor=5, target_dist='Gaussian', shift_type= 'min', target_distribution='normal', seed=seed):
+# scales empirical matrix to [0,1] per totality_scale() function
+def scale_input_matrix(input_matrix, shift_type='min', axis=1):
     if shift_type == 'min':
         input_matrix += abs(input_matrix.min()) + 0.001
     elif shift_type == 'abs':
@@ -82,37 +104,82 @@ def calculate_scaled_kl_div(input_matrix, shift_factor=5, target_dist='Gaussian'
     else:
         raise Exception('Invalid shift type.')
 
-    if target_distribution == 'normal':
-        target_dist = np.random.normal(1, 0.1, (1, input_matrix.shape[1]))
-    elif target_distribution == 'power': # power law distribution
+    input_matrix = np.apply_along_axis(totality_scale, axis, input_matrix)
+    np.matrix.sort(input_matrix, axis=axis)
+
+    return input_matrix
+
+# Calculate KL div between scaled weights (per row) with scaled target distribution
+def calculate_scaled_kl_div(input_matrix, seed=seed,
+                            shift_type= 'min', target_distribution='norm', axis=1):
+    
+    input_matrix = scale_input_matrix(input_matrix, shift_type=shift_type, axis=axis)
+    
+    if target_distribution == 'norm':
+        target_dist = np.random.normal(1, 0.1, (1, input_matrix.shape[axis]))
+    elif target_distribution == 'powerlaw': # power law distribution
         a = 1.5
-        x = np.linspace(powerlaw.ppf(0.01, a), powerlaw.ppf(0.99, a), input_matrix.shape[1])
-        target_dist = np.asarray(powerlaw.pdf(x, a, input_matrix.shape[1]))
+        x = np.linspace(powerlaw.ppf(0.01, a), powerlaw.ppf(0.99, a), input_matrix.shape[axis])
+        target_dist = np.asarray(powerlaw.pdf(x=x, a=a, loc=0, scale=1))
     else:
         raise Exception('Invalid target distribution.')
-
-    input_matrix = np.apply_along_axis(totality_scale, 1, input_matrix)
+    
     target_dist = totality_scale(target_dist)
+    target_dist = np.sort(target_dist)
 
-    kl_values = np.apply_along_axis(kl_div, 1, input_matrix, target_dist)
+    print("Target distribution inner sum: "+str(target_dist.sum()))
+    
+    kl_values = np.apply_along_axis(kl_div, axis, input_matrix, target_dist)
     return kl_values
+
+
+# Calculate KS distance (D or p-)value between scaled weights (per row) with scaled target distribution
+def calculate_ks_distance(input_matrix, seed=seed, shift_type= 'min', 
+                          target_distribution='norm', ks_metric='D', axis=1):
+    
+    input_matrix = scale_input_matrix(input_matrix, shift_type=shift_type, axis=axis)
+    
+    if target_distribution not in ['norm', 'powerlaw']:
+        raise Exception('Invalid target distribution.')
+     
+    ks_values = np.apply_along_axis(ks_test, axis, input_matrix, target_distribution, ks_metric)
+    return ks_values
+
+# calculates distribution distance (of all rows) per tuning type
+def calculate_distance_values(weights, tuning_type='kl_div', shift_type='min',
+                              target_distribution='norm', ks_metric='D', axis=1):
+
+    if tuning_type == 'kl_div':
+        distance_values = calculate_scaled_kl_div(weights, shift_type=shift_type, 
+                                                  target_distribution=target_distribution, axis=axis)
+    elif tuning_type == 'ks_test':
+        distance_values = calculate_ks_distance(weights, shift_type=shift_type, target_distribution=target_distribution, 
+                                                ks_metric=ks_metric, axis=axis)
+        
+    return distance_values
 
 # calculates KL divergence from a target distribution for incoming and outcoming weight distributions
 # KL calculated after min-max scaling to [0, 1] + eps; returns averaged incoming and outcoming scores for each neuron
-def calculate_kl_div_layer_values(weights_dict, layer_index, target_dist='Gaussian', shift_type='min', target_distribution='normal'):    
+def calculate_layer_distance_values(weights_dict, layer_index, 
+                                    shift_type='min', target_distribution='norm', 
+                                    tuning_type='kl_div', ks_metric='D'):    
     if layer_index > len(weights_dict): # output layer or erroneous index
         raise Exception('Layer index is out of bounds.')
     else:
-        outcoming_weights = weights_dict['w'+str(layer_index)]
-        kl_values = calculate_scaled_kl_div(outcoming_weights, shift_type=shift_type, target_distribution=target_distribution)
-        return kl_values
+        outcoming_weights = weights_dict['w'+str(layer_index)]        
+        distance_values = calculate_distance_values(outcoming_weights, tuning_type=tuning_type, 
+                                                    shift_type=shift_type, target_distribution=target_distribution, axis=1)
+        
+        #return distance_values
     
         if layer_index > 1:
             incoming_weights = weights_dict['w'+str(layer_index-1)]
-            incoming_kl_values = calculate_scaled_kl_div(incoming_weights, axis=1, shift_type=shift_type, target_distribution=target_distribution)
-            kl_values = (kl_values + incoming_kl_values) / 2
+            incoming_distance_values = calculate_distance_values(incoming_weights, tuning_type=tuning_type, shift_type=shift_type,
+                                                                 target_distribution=target_distribution, axis=0)
+
+            distance_values = (distance_values + incoming_distance_values) / 2
             
-    return kl_values
+    return distance_values
 
 # helper function to get indices of layer at index in a graph
 def get_layer_inds(boundaries, index):
@@ -132,7 +199,9 @@ def get_layer_inds(boundaries, index):
 # tuning_type: 'centrality' (default: betweenness centrality) 
 #              'kl_div' (default: with Gaussian)   
 #              'random': 
-def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[], k_selected=4, tuning_type='centrality', dt=[('weight', float)], shift_type='min', target_distribution='normal'):    
+def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[], 
+                 k_selected=4, tuning_type='centrality', dt=[('weight', float)], 
+                 shift_type='min', target_distribution='norm'):    
     if tuning_type == 'random': # random selection of indices
         select_inds = random.sample(range(len(avail_inds)), k_selected) # indices within avail_inds to be turned off        
     else:
@@ -144,10 +213,11 @@ def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[], k_selecte
             # calculate centrality measure values
             print("Calculating centrality measures...")
             values = np.array(list(nx.betweenness_centrality(weight_G, k=7, weight='weight').values()))
-        elif tuning_type == 'kl_div':
+        elif tuning_type == 'kl_div' or tuning_type == 'ks_test':
             # calculate KL divergence from a target distribution (default: Gaussian)
-            print("Calculating KL-divergence values...")
-            values = calculate_kl_div_layer_values(weights_dict, layer_index, target_dist='Gaussian', shift_type=shift_type, target_distribution=target_distribution)
+            print("Calculating distribution distance values per {0}...".format(tuning_type))
+            values = calculate_layer_distance_values(weights_dict, layer_index, tuning_type=tuning_type,
+                                                     shift_type=shift_type, target_distribution=target_distribution)
         else:
             raise Exception('Invalid tuning type value.')
             
@@ -349,7 +419,7 @@ def get_vardict(layer_sizes, var_init, var_type, prefix):
         elif(var_type == 'weight'):
             var_shape = [n_origin, n_dest]
 
-        if(var_init == 'normal'):
+        if(var_init == 'norm'):
             dict[var_name] = tf.Variable(tf.random_normal(var_shape))
         elif(var_init == 'zeros'):
             dict[var_name] = tf.Variable(tf.zeros(var_shape, dtype=tf.float32))

@@ -32,7 +32,7 @@ class DataSet(object):
     return self._epochs_completed
 
   def next_batch(self, batch_size):
-    start = self._index_in_epoch
+    start = int(self._index_in_epoch)
     self._index_in_epoch += batch_size
     if self._index_in_epoch > self._num_examples:
       # Finished epoch
@@ -46,5 +46,6 @@ class DataSet(object):
       start = 0
       self._index_in_epoch = batch_size
       assert batch_size <= self._num_examples
-    end = self._index_in_epoch
+    end = int(self._index_in_epoch)
+
     return self._points[start:end], self._labels[start:end]

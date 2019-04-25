@@ -11,7 +11,7 @@ from numpy import dtype, shape
 
 import tensorflow as tf
 
-from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph, read_dataset, get_next_batch, get_next_even_batch, set_seed, get_layer, get_vardict, get_arrdict, multilayer_perceptron
+from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph, read_dataset, get_next_batch, get_next_even_batch, set_seed, get_layer, get_vardict, get_arrdict, multilayer_perceptron, ks_test
 from numpy.random.mtrand import shuffle
 
 #from tensorflow.examples.tutorials.mnist import input_data
@@ -36,7 +36,7 @@ display_step = 1
 # Tuning parameters
 tuning_type = 'centrality' # tuning type:Centrality-based (default) or KL Divergence
 shift_type = 'min' # type of shifting the target distribution to positive values in KL div-based tuning
-target_distribution = 'normal' # target distribution in KL div-based tuning
+target_distribution = 'norm' # target distribution in KL div-based tuning
 tuning_step = 1 # number of step(s) at which centrality-based tuning periodically takes place
 k_selected=1 # number of neurons selected to be tuned ('turned off') each round
 n_tuned_layers = 1 # number of layers to be tuned; a value of 2 means layers 2 and 3 (1st & 2nd hidden layers will be tuned)
@@ -115,8 +115,8 @@ X = tf.placeholder("float", [None, n_input])
 Y = tf.placeholder("float", [None, n_classes])
     
 # Store layers weight & bias
-weight_init = 'normal'
-bias_init = 'normal'
+weight_init = 'norm'
+bias_init = 'norm'
 
 weights = get_vardict(layer_sizes, weight_init, 'weight', 'w')
 tuned_weights = get_vardict(layer_sizes, 'zeros', 'weight', 'w')
@@ -173,7 +173,8 @@ with tf.Session() as sess:
             for l in range(2, tuning_layer_end):
                 print("Tuning on layer {}".format(l))        
                 # create weight graph
-                current_off_inds = get_off_inds(weights_dict, avail_indices['a'+str(l)], layer_index=l, k_selected=k_selected, tuning_type=tuning_type, shift_type=shift_type, target_distribution=target_distribution)
+                current_off_inds = get_off_inds(weights_dict, avail_indices['a'+str(l)], layer_index=l, k_selected=k_selected, 
+                                                tuning_type=tuning_type, shift_type=shift_type, target_distribution=target_distribution)
                 
                 # update available and off_indices (i.e. indices of tuned neurons)
                 avail_indices['a'+str(l)] = np.delete(avail_indices['a'+str(l)], current_off_inds)
@@ -182,7 +183,7 @@ with tf.Session() as sess:
                 # get a tensor with off_inds neurons turned off
                 tuned_weights['w'+str(l)] = tune_weights(off_indices['o'+str(l)], weights_dict, l)
                 print("Weight tuning done.")
-            
+    
             # run neuron tuning operation
             if(n_tuned_layers == 1):
                 sess.run(neuron_tuning_op2)
