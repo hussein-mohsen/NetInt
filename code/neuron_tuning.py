@@ -137,7 +137,7 @@ train_op = optimizer.minimize(loss_op)
 # Initialize the variables
 init = tf.global_variables_initializer()
 
-D = read_dataset(dataset_name, shuffle=False)
+D = read_dataset(dataset_name)
 X_tr, Y_tr = D.train.points, D.train.labels
 X_ts, Y_ts = D.test.points, D.test.labels
 

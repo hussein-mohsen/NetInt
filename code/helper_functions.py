@@ -8,6 +8,8 @@ import networkx as nx
 import collections
 
 from sklearn.preprocessing import minmax_scale
+from sklearn.model_selection import train_test_split
+
 from numpy.random.mtrand import shuffle
 
 from scipy.io import loadmat
@@ -40,7 +42,7 @@ def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
         biases_key = 'b' + str(l+1)
         activation_function = activ_funcs[l]
         layer_type = layer_types[l]
-        
+
         layer = get_layer(input_tensor, weights[weights_key], biases[biases_key], activation_function, layer_type)
         layers.append(layer)
 
@@ -295,7 +297,7 @@ def tune_weights(off_indices, current_weights, layer):
     return tf.convert_to_tensor(current_weights['w'+str(layer)], dtype=tf.float32)
 
 # reads data
-def read_dataset(dataset_name='mnist', shuffle=True):
+def read_dataset(dataset_name='mnist'):
     if(dataset_name == 'mnist'):
         mnist = read_data_sets('../data/MNIST_data/', one_hot=True)
         
@@ -315,7 +317,23 @@ def read_dataset(dataset_name='mnist', shuffle=True):
         
         if(select_correlated_cols):
             X_tr, X_ts = get_correlated_features(X_tr, Y_tr, X_ts, N)
-    
+    elif(dataset_name == 'diabetes'):
+        diabetes_filename = '../data/csv_data/diabetes_data_processed.csv'
+        diabetes_data =  np.genfromtxt(diabetes_filename, delimiter=',') # diabetes shape: (101767, 36)
+
+        X = diabetes_data[:, 0:-1]
+        Y = diabetes_data[:, -1].astype(int) 
+        
+        X_tr, X_ts, Y_tr, Y_ts = train_test_split(X, Y, test_size=0.2, random_state=seed)
+        X_tr, X_val, Y_tr, Y_val = train_test_split(X_tr, Y_tr, test_size=0.25, random_state=seed)
+        
+        n_values = len(np.unique(Y_tr))
+        Y_ts = np.maximum(Y_ts, 0, Y_ts) # max w/ 0 to fix artifact in data where some y vales < 0
+
+        Y_tr = np.eye(n_values)[Y_tr]
+        Y_val = np.eye(n_values)[Y_val]
+        Y_ts = np.eye(n_values)[Y_ts] 
+        
     train = DataSet(X_tr, Y_tr)
     validation = DataSet(X_val, Y_val)
     test = DataSet(X_ts, Y_ts)

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --partition=gpu
-#SBATCH --job-name=NetInt_experiment
+#SBATCH --job-name=tuning_experiment
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=25GB
