@@ -7,7 +7,7 @@ import tensorflow as tf
 import networkx as nx
 import collections
 
-from sklearn.preprocessing import minmax_scale
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 
 from numpy.random.mtrand import shuffle
@@ -65,9 +65,6 @@ def get_layer(x, w, b, activ_fun, layer_type='ff'):
 
 # calculates KL divergence of two distributions
 def kl_div(empirical, target):
-    print("Empirical Sum: "+str(empirical.sum()))
-    print("Target Sum: "+str(target.sum()))
-    
     if(abs(empirical.sum()-1) > 0.05 or abs(target.sum()-1) > 0.05):
         print("Warning: one or more distributions do not sum up to 1")
         
@@ -297,10 +294,10 @@ def tune_weights(off_indices, current_weights, layer):
     return tf.convert_to_tensor(current_weights['w'+str(layer)], dtype=tf.float32)
 
 # reads data
-def read_dataset(dataset_name='mnist'):
+def read_dataset(dataset_name='mnist', minmax_scaling=False):
     if(dataset_name == 'mnist'):
         mnist = read_data_sets('../data/MNIST_data/', one_hot=True)
-        
+
         X_tr, Y_tr = mnist.train.images, mnist.train.labels
         X_val, Y_val = mnist.validation.images, mnist.validation.labels
         X_ts, Y_ts = mnist.test.images, mnist.test.labels
@@ -333,7 +330,14 @@ def read_dataset(dataset_name='mnist'):
         Y_tr = np.eye(n_values)[Y_tr]
         Y_val = np.eye(n_values)[Y_val]
         Y_ts = np.eye(n_values)[Y_ts] 
-        
+    
+    if minmax_scaling:
+        scaler = MinMaxScaler()
+        X_tr = scaler.fit_transform(X_tr)
+        X_val = scaler.fit_transform(X_val)
+        X_ts = scaler.transform(X_ts)
+        print("Minmax scaling done.")
+    
     train = DataSet(X_tr, Y_tr)
     validation = DataSet(X_val, Y_val)
     test = DataSet(X_ts, Y_ts)
