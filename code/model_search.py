@@ -1,6 +1,6 @@
-from helper_functions import read_dataset, multilayer_perceptron, get_vardict
+from helper_functions import read_dataset, multilayer_perceptron, get_vardict, unpack_dict
 
-from hyperopt import fmin, hp, Trials, tpe, STATUS_OK
+from hyperopt import fmin, hp, Trials, tpe, space_eval, STATUS_OK
 import tensorflow as tf
 
 import numpy as np
@@ -25,12 +25,12 @@ def train_model(space):
     learning_rate=float(space["learning_rate"])
     n_hidden_1=int(space["n_hidden_1"])
     n_hidden_2=int(space["n_hidden_2"])
-    activ_func1= space["activ_func1"]
-    activ_func2= space["activ_func2"]
-    activ_func3= space["activ_func3"]
+    activ_func1= str(space["activ_func1"])
+    activ_func2= str(space["activ_func2"])
+    activ_func3= str(space["activ_func3"])
     
-    training_epochs = 30
-    display_step = min(5, training_epochs/2)
+    training_epochs = 300
+    display_step = min(50, int(training_epochs/2))
         
     print("Batch size: {0} \nlearning rate: {1} \nn_hidden_1: {2} \nn_hidden_2: {3} \n" \
           "activ_func1: {4} \nactiv_func2: {5} \nactiv_func3: {6}".format(batch_size, 
@@ -65,6 +65,7 @@ def train_model(space):
     train_op = optimizer.minimize(loss_op)
         
     # Initialize the variables
+
     init = tf.global_variables_initializer()
     with tf.Session() as sess:
         sess.run(init)
@@ -85,7 +86,7 @@ def train_model(space):
                 avg_loss_value += loss_value / n_batch
                     
             end = time.time()
-            
+
             if(epoch % display_step == 0):
                 # Test model
                 # Calculate training accuracy        
@@ -100,13 +101,14 @@ def train_model(space):
                 print("Epoch duration: "+str(end-start)+" sec.\n")
                 
     # train and return loss
-    return {'loss': avg_loss_value, 'accuracy': accuracy_value, 'status': STATUS_OK}
+    return {'accuracy': accuracy_value, 'loss': avg_loss_value, 'status': STATUS_OK}
 
     
 def main():
     print("Start")
 
     '''
+    # to train a single model
     space = {
         'learning_rate': 0.01,
         'batch_size': 200,
@@ -123,18 +125,23 @@ def main():
     space = {
         'learning_rate': hp.uniform('learning_rate', 0.001, 0.05),
         'batch_size': hp.uniform('batch_size', 50, 250),
-        'activ_func1': hp.choice('activ_func1', ['relu', 'sigmoid']),
-        'activ_func2': hp.choice('activ_func2', ['relu', 'sigmoid']),
+        'activ_func1': hp.choice('activ_func1', ('relu', 'sigmoid')),
+        'activ_func2': hp.choice('activ_func2', ('relu', 'sigmoid')),
         'activ_func3': hp.choice('activ_func3', ['softmax']),
         'n_hidden_1': hp.uniform('n_hidden_1', 500, 1200),
         'n_hidden_2': hp.uniform('n_hidden_2', 500, 1200)
     }
     
     t = Trials()
-    best = fmin(train_model, space=space, algo=tpe.suggest, max_evals=100, trials=t)
-    print('TPE best: {}'.format(best))
+    best = fmin(train_model, space=space, algo=tpe.suggest, max_evals=3, trials=t)
+    print('TPE best: {}'.format(space_eval(space, best)))
 
     for trial in t.trials:
-        print('{} --> {}'.format(trial['result'], trial['misc']['vals']))
+        try:
+            trial_hyperparam_space = unpack_dict(trial['misc']['vals'])        
+            print('{} --> {}'.format(trial['result'], space_eval(space, trial_hyperparam_space)))
+        except:
+            print('Error with a hyperparameter space occurred.')
+            continue
     
 main()

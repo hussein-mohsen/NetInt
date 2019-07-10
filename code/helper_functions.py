@@ -452,3 +452,17 @@ def get_vardict(layer_sizes, var_init, var_type, prefix):
             dict[var_name] = tf.Variable(tf.zeros(var_shape, dtype=tf.float32))
 
     return dict
+
+# unpacks values from returned hyperopt spaces. 
+# In some instances, returned values are each in a list (even for singular values)
+# used for space_eval function for better representation
+def unpack_dict(input_dict):
+    unpacked_dict = {}
+    
+    for key, value in list(input_dict.items()):
+        if(type(value) is list):
+            unpacked_dict[key] = value[0]
+        else:
+            unpacked_dict[key] = value
+        
+    return unpacked_dict
