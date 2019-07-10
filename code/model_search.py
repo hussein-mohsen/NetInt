@@ -6,6 +6,9 @@ import tensorflow as tf
 import numpy as np
 import time
 
+from sklearn.preprocessing import normalize
+from IPython.core.display import display
+
 # get data using read_dataset()
 # feed train_model to fmin()
 
@@ -13,49 +16,47 @@ import time
 # the function to be fed to hyperopt's fmin()
 # X and Y are tf.placeholders, D is a Dataset object
 def train_model(space):
-    dataset_name = 'diabetes'
-    D = read_dataset(dataset_name)
+    dataset_name = 'mnist' #'diabetes' #'psychencode' #'mnist'
+    D = read_dataset(dataset_name=dataset_name, minmax_scaling=True)
     X_tr, Y_tr = D.train.points, D.train.labels
     X_ts, Y_ts = D.test.points, D.test.labels
 
     batch_size=int(space["batch_size"])
-    learning_rate=space["learning_rate"]
+    learning_rate=float(space["learning_rate"])
     n_hidden_1=int(space["n_hidden_1"])
     n_hidden_2=int(space["n_hidden_2"])
-    activ_func1="linear"#space["activ_func1"]
-    activ_func2="linear"#space["activ_func2"]
-    activ_func3="linear"#space["activ_func3"]
+    activ_func1= space["activ_func1"]
+    activ_func2= space["activ_func2"]
+    activ_func3= space["activ_func3"]
     
-    #n_hidden_1=500
-    #n_hidden_2=100
-    regularization_rate=0.1
-    
-    training_epochs = 10
-    
-    print("Batch size: {}".format(batch_size))
-    print("Training data shape: {}".format(D.train.points.shape))
-    
+    training_epochs = 30
+    display_step = min(5, training_epochs/2)
+        
+    print("Batch size: {0} \nlearning rate: {1} \nn_hidden_1: {2} \nn_hidden_2: {3} \n" \
+          "activ_func1: {4} \nactiv_func2: {5} \nactiv_func3: {6}".format(batch_size, 
+          learning_rate, n_hidden_1, n_hidden_2, activ_func1, activ_func2, activ_func3))
+
     n_input = D.train.points.shape[1] # number of features
     n_classes = len(np.unique(np.argmax(D.train.labels, axis=1)))
     n_batch = int(D.train.points.shape[0]/batch_size)
 
-    print("N_batch: {}".format(n_batch))
-    print("N_classes: {}".format(n_classes))
+    print("N_input: {0} \nN_classes: {1} \nN_batch: {2} \n".format(n_input, n_classes, n_batch))
 
     # Input data placeholder
     X = tf.placeholder("float", [None, n_input])
     Y = tf.placeholder("float", [None, n_classes])
 
     layer_sizes = [n_input, n_hidden_1, n_hidden_2, n_classes]
-    
-    print("Layer sizes: {}".format(layer_sizes))
         
-    weights = get_vardict(layer_sizes, 'norm', 'weight', 'w')
-    biases = get_vardict(layer_sizes, 'norm', 'bias', 'b')
-
     layer_types = ["ff", "ff", "ff", "ff"]
     activ_funcs = [activ_func1, activ_func2, activ_func3]
     
+    weights = get_vardict(layer_sizes, 'norm', 'weight', 'w')
+    biases = get_vardict(layer_sizes, 'norm', 'bias', 'b')
+
+    print("Layer sizes: {}".format(layer_sizes)) 
+    print("Activation_funcs: {}".format(activ_funcs))
+
     # get MLP
     logits = multilayer_perceptron(X, weights, biases, activ_funcs, layer_types)
     
@@ -65,7 +66,6 @@ def train_model(space):
         
     # Initialize the variables
     init = tf.global_variables_initializer()
-    
     with tf.Session() as sess:
         sess.run(init)
 
@@ -77,75 +77,64 @@ def train_model(space):
             # Loop over all batches
             for i in range(n_batch):
                 batch_x, batch_y = D.train.next_batch(batch_size)
-
+                #normalize(batch_x, axis=0, norm='max')
+                
                 _, loss_value = sess.run([train_op, loss_op], feed_dict={X: batch_x, Y: batch_y})
-                
-                
-                ''' block added for debugging'''
-                pred = tf.nn.softmax(logits)  # Apply softmax to logits
-                pr = sess.run(pred, feed_dict={X:batch_x})
-                #print(batch_y)
-                #print("===")
-                #print(pr)
         
                 # Compute average loss
                 avg_loss_value += loss_value / n_batch
+                    
+            end = time.time()
+            
+            if(epoch % display_step == 0):
+                # Test model
+                # Calculate training accuracy        
+                correct_prediction = tf.equal(tf.argmax(logits, 1), tf.argmax(Y, 1)) 
+                accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
+                                
+                # Calculate test accuracy
+                accuracy_value = accuracy.eval({X: X_ts, Y: Y_ts})
+            
+                print('Epoch: '+str(epoch))
+                print("Accuracy:"+str(accuracy_value))
+                print("Epoch duration: "+str(end-start)+" sec.\n")
                 
-            end = time.time()
-            
-            w1 = sess.run(weights['w1'], feed_dict={X: batch_x})
-            print("Weights of Epoch ")
-            print(w1)    
-            end = time.time()
-            
-        # Test model
-        pred = tf.nn.softmax(logits)  # Apply softmax to logits
-        correct_prediction = tf.equal(tf.argmax(pred, 1), tf.argmax(Y, 1))
+    # train and return loss
+    return {'loss': avg_loss_value, 'accuracy': accuracy_value, 'status': STATUS_OK}
 
-        # Calculate accuracy
-        accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
-        accuracy_value = accuracy.eval({X: X_ts, Y: Y_ts})
-        
-        print('Epochs: ', training_epochs)
-        print("Accuracy:", accuracy_value)
     
-        # train and return loss
-        return {'loss': avg_loss_value, 'accuracy': accuracy_value, 'status': STATUS_OK}
+def main():
+    print("Start")
 
-def main():    
+    '''
     space = {
-        'learning_rate': 0.1,
+        'learning_rate': 0.01,
         'batch_size': 200,
-        #'activ_func1': hp.choice('activ_func1', ['sigmoid']),
-        #'activ_func2': hp.choice('activ_func2', ['sigmoid']),
-        #'activ_func3': hp.choice('activ_func3', ['sigmoid']),
-        'n_hidden_1': 200,
-        'n_hidden_2': 250
+        'activ_func1': 'relu',
+        'activ_func2': 'relu',
+        'activ_func3': 'softmax',
+        'n_hidden_1': 1200,
+        'n_hidden_2': 1200
     }
         
     train_model(space)
-
     '''
-    # read dataset
-    dataset_name = 'diabetes'
-    D = read_dataset(dataset_name)
     
     space = {
-        'learning_rate': hp.loguniform('learning_rate', 0, 0.5),
-        'batch_size': hp.quniform('batch_size', 20, 250, 25),
-        #'activ_func1': hp.choice('activ_func1', ['sigmoid']),
-        #'activ_func2': hp.choice('activ_func2', ['sigmoid']),
-        #'activ_func3': hp.choice('activ_func3', ['sigmoid']),
-        'n_hidden_1': hp.quniform('n_hidden_1', 50, 400, 10),
-        'n_hidden_2': hp.quniform('n_hidden_2', 50, 400, 10)
+        'learning_rate': hp.uniform('learning_rate', 0.001, 0.05),
+        'batch_size': hp.uniform('batch_size', 50, 250),
+        'activ_func1': hp.choice('activ_func1', ['relu', 'sigmoid']),
+        'activ_func2': hp.choice('activ_func2', ['relu', 'sigmoid']),
+        'activ_func3': hp.choice('activ_func3', ['softmax']),
+        'n_hidden_1': hp.uniform('n_hidden_1', 500, 1200),
+        'n_hidden_2': hp.uniform('n_hidden_2', 500, 1200)
     }
-
+    
     t = Trials()
     best = fmin(train_model, space=space, algo=tpe.suggest, max_evals=100, trials=t)
     print('TPE best: {}'.format(best))
 
     for trial in t.trials:
         print('{} --> {}'.format(trial['result'], trial['misc']['vals']))
-    '''
     
 main()

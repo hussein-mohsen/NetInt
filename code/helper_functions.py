@@ -43,9 +43,13 @@ def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
         activation_function = activ_funcs[l]
         layer_type = layer_types[l]
 
+        if(l == len(activ_funcs)-1):
+            activation_function = 'linear'
+            
         layer = get_layer(input_tensor, weights[weights_key], biases[biases_key], activation_function, layer_type)
         layers.append(layer)
 
+    print(layers)
     return layers[-1] # return the last tensor, i.e. output layer
 
 # creates TF layers
@@ -57,7 +61,8 @@ def get_layer(x, w, b, activ_fun, layer_type='ff'):
             tf_layer = tf.nn.sigmoid(tf_layer)
         elif(activ_fun == 'softmax'):
             tf_layer = tf.nn.softmax(tf_layer)
-            
+        elif(activ_fun == 'relu'): # not fully tested yet
+            tf_layer = tf.nn.relu(tf_layer)
     else:
         raise Exception('Invalid layer type.')
     
