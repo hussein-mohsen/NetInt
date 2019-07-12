@@ -24,7 +24,10 @@ from scipy.stats import powerlaw
 from helper_objects import DataSet
 from tensorflow.python.framework import dtypes
 
+from hyperopt import space_eval
+
 seed = 1234
+epsilon = 0.00001
 
 # Create the MLP
 # x is the input tensor, activ_funs is a list of activation functions
@@ -94,31 +97,61 @@ def ks_test(empirical, target_distribution='norm', metric='D'):
     elif metric == 'p_value':
         return ks_results[1]
 
-# scales a values s.t. sum = 1
+# scales values s.t. sum = 1
 def totality_scale(values):
     total = values.sum()
-    return values/total
+    return ((values/total) + epsilon)
 
-# scales empirical matrix to [0,1] per totality_scale() function
-def scale_input_matrix(input_matrix, shift_type='min', axis=1):
-    if shift_type == 'min':
-        input_matrix += abs(input_matrix.min()) + 0.001
-    elif shift_type == 'abs':
-        input_matrix = abs(input_matrix) + 0.001
-    else:
-        raise Exception('Invalid shift type.')
+# scale all values to [0,1]
+def minmax_scale(values):
+    values = (values - values.min())/(values.max()-values.min())
+    return (values + epsilon)
 
-    input_matrix = np.apply_along_axis(totality_scale, axis, input_matrix)
-    np.matrix.sort(input_matrix, axis=axis)
+# scales empirical matrix to [0,1] per scale_type
+def scale_input_matrix(input_matrix, shift_type='min', scale_type='totality', axis=1):
+    if scale_type == 'totality':
+        if shift_type == 'min':
+            input_matrix += abs(input_matrix.min())
+        elif shift_type == 'abs':
+            input_matrix = abs(input_matrix)
+        else:
+            raise Exception('Invalid shift type.')
+    
+        input_matrix = np.apply_along_axis(totality_scale, axis, input_matrix)
+    elif scale_type == 'minmax':
+        input_matrix = np.apply_along_axis(minmax_scale, axis, input_matrix)
 
     return input_matrix
 
+# scales input vector to [0,1] per scale_type
+def scale_input_vector(input_vector, scale_type='totality', shift_type='min'):
+    if scale_type == 'totality':
+        if shift_type == 'min':
+            input_vector += abs(input_vector.min())
+        elif shift_type == 'abs':
+            input_vector = abs(input_vector)
+        else:
+            raise Exception('Invalid shift type.')
+        
+        input_vector = totality_scale(input_vector)
+    elif scale_type == 'minmax':
+        input_vector = minmax_scale(input_vector)
+
+    return input_vector
+
+# returns a pmf from of a vectors histogram
+def calculate_histogram_pmf(vector, n_bins=10):
+    vector_histogram, bins = np.histogram(vector, bins=n_bins)
+    return totality_scale(vector_histogram)
+
 # Calculate KL div between scaled weights (per row) with scaled target distribution
 def calculate_scaled_kl_div(input_matrix, seed=seed,
-                            shift_type= 'min', target_distribution='norm', axis=1):
+                            shift_type= 'min', scale_type='totality',
+                            target_distribution='norm', axis=1):
     
-    input_matrix = scale_input_matrix(input_matrix, shift_type=shift_type, axis=axis)
-    
+    input_matrix = scale_input_matrix(input_matrix, shift_type=shift_type, scale_type=scale_type, axis=axis) # scaling
+    input_matrix = np.apply_along_axis(calculate_histogram_pmf, axis, input_matrix) # histograms
+
     if target_distribution == 'norm':
         target_dist = np.random.normal(1, 0.1, (1, input_matrix.shape[axis]))
     elif target_distribution == 'powerlaw': # power law distribution
@@ -128,20 +161,19 @@ def calculate_scaled_kl_div(input_matrix, seed=seed,
     else:
         raise Exception('Invalid target distribution.')
     
-    target_dist = totality_scale(target_dist)
-    target_dist = np.sort(target_dist)
+    target_dist = scale_input_vector(target_dist, shift_type=shift_type, scale_type=scale_type) # scaling
+    target_dist = calculate_histogram_pmf(target_dist) # histogram
 
     print("Target distribution inner sum: "+str(target_dist.sum()))
     
     kl_values = np.apply_along_axis(kl_div, axis, input_matrix, target_dist)
     return kl_values
-
-
+    
 # Calculate KS distance (D or p-)value between scaled weights (per row) with scaled target distribution
-def calculate_ks_distance(input_matrix, seed=seed, shift_type= 'min', 
+def calculate_ks_distance(input_matrix, seed=seed, shift_type='min', scale_type='totality',
                           target_distribution='norm', ks_metric='D', axis=1):
     
-    input_matrix = scale_input_matrix(input_matrix, shift_type=shift_type, axis=axis)
+    input_matrix = scale_input_matrix(input_matrix, shift_type=shift_type, scale_type=scale_type, axis=axis)
     
     if target_distribution not in ['norm', 'powerlaw']:
         raise Exception('Invalid target distribution.')
@@ -150,36 +182,40 @@ def calculate_ks_distance(input_matrix, seed=seed, shift_type= 'min',
     return ks_values
 
 # calculates distribution distance (of all rows) per tuning type
-def calculate_distance_values(weights, tuning_type='kl_div', shift_type='min',
+def calculate_distance_values(weights, tuning_type='kl_div', shift_type='min', scale_type='totality',
                               target_distribution='norm', ks_metric='D', axis=1):
 
     if tuning_type == 'kl_div':
-        distance_values = calculate_scaled_kl_div(weights, shift_type=shift_type, 
+        distance_values = calculate_scaled_kl_div(weights, shift_type=shift_type, scale_type=scale_type,
                                                   target_distribution=target_distribution, axis=axis)
     elif tuning_type == 'ks_test':
-        distance_values = calculate_ks_distance(weights, shift_type=shift_type, target_distribution=target_distribution, 
-                                                ks_metric=ks_metric, axis=axis)
+        distance_values = calculate_ks_distance(weights, shift_type=shift_type, scale_type=scale_type,
+                                                target_distribution=target_distribution, ks_metric=ks_metric, 
+                                                axis=axis)
         
     return distance_values
 
 # calculates KL divergence from a target distribution for incoming and outcoming weight distributions
 # KL calculated after min-max scaling to [0, 1] + eps; returns averaged incoming and outcoming scores for each neuron
 def calculate_layer_distance_values(weights_dict, layer_index, 
-                                    shift_type='min', target_distribution='norm', 
-                                    tuning_type='kl_div', ks_metric='D'):    
+                                    shift_type='min', scale_type='totality', 
+                                    target_distribution='norm', tuning_type='kl_div', 
+                                    ks_metric='D'):    
     if layer_index > len(weights_dict): # output layer or erroneous index
         raise Exception('Layer index is out of bounds.')
     else:
         outcoming_weights = weights_dict['w'+str(layer_index)]        
         distance_values = calculate_distance_values(outcoming_weights, tuning_type=tuning_type, 
-                                                    shift_type=shift_type, target_distribution=target_distribution, axis=1)
+                                                    shift_type=shift_type, scale_type=scale_type, 
+                                                    target_distribution=target_distribution, axis=1)
         
         #return distance_values
     
         if layer_index > 1:
             incoming_weights = weights_dict['w'+str(layer_index-1)]
             incoming_distance_values = calculate_distance_values(incoming_weights, tuning_type=tuning_type, shift_type=shift_type,
-                                                                 target_distribution=target_distribution, axis=0)
+                                                                 scale_type=scale_type, target_distribution=target_distribution, 
+                                                                 axis=0)
 
             distance_values = (distance_values + incoming_distance_values) / 2
             
@@ -205,7 +241,7 @@ def get_layer_inds(boundaries, index):
 #              'random': 
 def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[], 
                  k_selected=4, tuning_type='centrality', dt=[('weight', float)], 
-                 shift_type='min', target_distribution='norm'):    
+                 shift_type='min', scale_type='totality', target_distribution='norm'):    
     if tuning_type == 'random': # random selection of indices
         select_inds = random.sample(range(len(avail_inds)), k_selected) # indices within avail_inds to be turned off        
     else:
@@ -221,7 +257,8 @@ def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[],
             # calculate KL divergence from a target distribution (default: Gaussian)
             print("Calculating distribution distance values per {0}...".format(tuning_type))
             values = calculate_layer_distance_values(weights_dict, layer_index, tuning_type=tuning_type,
-                                                     shift_type=shift_type, target_distribution=target_distribution)
+                                                     shift_type=shift_type, scale_type=scale_type, 
+                                                     target_distribution=target_distribution)
         else:
             raise Exception('Invalid tuning type value.')
             
@@ -466,3 +503,22 @@ def unpack_dict(input_dict):
             unpacked_dict[key] = value
         
     return unpacked_dict
+
+# to get best result with its corresponding hyperparameter from a dictionary returned by hyperopt
+# t is a Trials object after the execution of hyperopt's fmin()
+def get_best_result(t, hp_space, metric='accuracy'):
+    best_metric_value = 0
+    best_trial_result = None
+    best_trial_hyperparam_space = {}
+    for trial in t.trials:
+        try:
+            if (trial['result'][metric] > best_metric_value):
+                best_metric_value = trial['result'][metric]
+                best_trial_result = trial['result']
+                best_trial_hyperparam_space = unpack_dict(trial['misc']['vals'])      
+        except:
+            print('Error with a hyperparameter space occurred.')
+            continue
+    
+    best_trial_result.update(space_eval(hp_space, best_trial_hyperparam_space)) # merge dictionaries
+    return best_trial_result # returns merged dictionaries (results+hyperparameter space)
