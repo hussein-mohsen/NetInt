@@ -174,7 +174,8 @@ with tf.Session() as sess:
                 print("Tuning on layer {}".format(l))        
                 # create weight graph
                 current_off_inds = get_off_inds(weights_dict, avail_indices['a'+str(l)], layer_index=l, k_selected=k_selected, 
-                                                tuning_type=tuning_type, shift_type=shift_type, target_distribution=target_distribution)
+                                                tuning_type=tuning_type, shift_type=shift_type, target_distribution=target_distribution,
+                                                percentiles=True)
                 
                 # update available and off_indices (i.e. indices of tuned neurons)
                 avail_indices['a'+str(l)] = np.delete(avail_indices['a'+str(l)], current_off_inds)
