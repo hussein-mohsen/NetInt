@@ -71,15 +71,15 @@ def get_layer(x, w, b, activ_fun, layer_type='ff'):
     return tf_layer
 
 # calculates KL divergence of two distributions
-def kl_div(empirical, target):
-    if(abs(empirical.sum()-1) > 0.05 or abs(target.sum()-1) > 0.05):
+def kl_div(empirical, target_dist):
+    if(abs(empirical.sum()-1) > 0.05 or abs(target_dist.sum()-1) > 0.05):
         print("Warning: one or more distributions do not sum up to 1")
         
-    kl_div_value = (empirical * np.log(empirical/target)).sum()
+    kl_div_value = (empirical * np.log(empirical/target_dist)).sum()
     return kl_div_value
 
 # calculate KS test to compare distance between CDFs of empirical and target_dist samples
-def ks_test(empirical, target_dist, metric='D'):
+def ks_test(empirical, target_dist, metric='D'):        
     ks_results = stats.ks_2samp(empirical, target_dist)
     
     if metric == 'D':
@@ -102,7 +102,7 @@ def percentile_input_matrix(input_matrix, bottom_percentile=1, top_percentile=99
     n_items = input_matrix.shape[axis]
     single_percentile = n_items/100
     
-    bottom_percentile = int(np.ceil((bottom_percentile/100)*n_items))
+    bottom_percentile = int(np.ceil((bottom_percentile/100)*n_items)) # index of bottom percentile
     top_percentile = int(np.ceil((top_percentile/100)*n_items))
     
     input_matrix = np.sort(input_matrix, axis=axis)
@@ -115,35 +115,21 @@ def percentile_input_matrix(input_matrix, bottom_percentile=1, top_percentile=99
     return input_matrix
 
 # scales empirical matrix to [0,1] per scale_type
-def scale_input_matrix(input_matrix, shift_type='min', scale_type='minmax', axis=1):
-    if scale_type == 'totality':
-        if shift_type == 'min':
-            input_matrix += abs(input_matrix.min())
-        elif shift_type == 'abs':
-            input_matrix = abs(input_matrix)
-        else:
-            raise Exception('Invalid shift type.')
-
-        input_matrix = np.apply_along_axis(totality_scale, axis, input_matrix)
-    elif scale_type == 'minmax':
+def scale_input_matrix(input_matrix, scale_type='minmax', axis=1):
+    if scale_type == 'minmax':
         input_matrix = np.apply_along_axis(minmax_scale, axis, input_matrix)
-        
+    else:
+        raise Exception('Invalid scale type for the matrix.')
+    
     return input_matrix
 
 # scales input vector to [0,1] per scale_type
-def scale_input_vector(input_vector, scale_type='minmax', shift_type='min'):
-    if scale_type == 'totality':
-        if shift_type == 'min':
-            input_vector += abs(input_vector.min())
-        elif shift_type == 'abs':
-            input_vector = abs(input_vector)
-        else:
-            raise Exception('Invalid shift type.')
-        
-        input_vector = totality_scale(input_vector)
-    elif scale_type == 'minmax':
+def scale_input_vector(input_vector, scale_type='minmax'):
+    if scale_type == 'minmax':
         input_vector = minmax_scale(input_vector)
-
+    else:
+        raise Exception('Invalid scale type for the vector.')
+    
     return input_vector
 
 # returns a pmf from of a vectors histogram
@@ -152,17 +138,17 @@ def calculate_histogram_pmf(vector):
     return totality_scale(vector_histogram)
 
 # Calculate KL div between scaled weights (per row) with scaled target distribution
-def calculate_scaled_kl_div(input_matrix, seed=seed, shift_type= 'min', 
-                            scale_type='minmax', target_distribution='norm', axis=1):
+def calculate_scaled_kl_div(input_matrix, seed=seed, scale_type='minmax', 
+                            target_distribution='norm', axis=1):
 
     if target_distribution == 'norm':
-        target_dist = np.random.normal(0, 1, size=(input_matrix.shape[axis], ))
+        target_dist = np.random.normal(0, 0.1, size=(input_matrix.shape[axis], ))
     elif 'powerlaw' in target_distribution: # power law and inverse power law distribution
         target_dist = np.random.power(a=0.35, size=(input_matrix.shape[axis], ))
     else:
         raise Exception('Invalid target distribution.')
     
-    target_dist = scale_input_vector(target_dist, shift_type=shift_type, scale_type=scale_type) # scaling
+    target_dist = scale_input_vector(target_dist, scale_type=scale_type) # scaling
     if 'inv' in target_distribution: # inverted power law distribution; higher density on higher weight values
         target_dist = (np.max(target_dist) - target_dist) + epsilon # invert distribution after minmax, i.e. 1-each value in scaled sample vector
 
@@ -170,22 +156,20 @@ def calculate_scaled_kl_div(input_matrix, seed=seed, shift_type= 'min',
     input_matrix = np.apply_along_axis(calculate_histogram_pmf, axis, input_matrix) # histograms
     target_dist = calculate_histogram_pmf(target_dist) # histogram
 
-    print("Target distribution inner sum: "+str(target_dist.sum()))
-    
     kl_values = np.apply_along_axis(kl_div, axis, input_matrix, target_dist)
     return kl_values
     
 # Calculate KS distance (D or p-)value between scaled weights (per row) with scaled target distribution
-def calculate_ks_distance(input_matrix, seed=seed, shift_type='min', scale_type='minmax',
+def calculate_ks_distance(input_matrix, seed=seed, scale_type='minmax',
                           target_distribution='norm', ks_metric='D', axis=1):
     if target_distribution == 'norm':
-        target_dist = np.random.normal(0, 1, size=(input_matrix.shape[axis], ))
+        target_dist = np.random.normal(0, 0.1, size=(input_matrix.shape[axis], ))
     elif 'powerlaw' in target_distribution: # power law and inverse power law distribution
         target_dist = np.random.power(a=0.35, size=(input_matrix.shape[axis], ))
     else:
         raise Exception('Invalid target distribution.')
     
-    target_dist = scale_input_vector(target_dist, shift_type=shift_type, scale_type=scale_type) # scaling
+    target_dist = scale_input_vector(target_dist, scale_type=scale_type) # scaling
     if 'inv' in target_distribution: # inverted power law distribution; higher density on higher values
         target_dist = (np.max(target_dist) - target_dist) + epsilon # invert distribution after minmax, i.e. 1-each value in scaled sample vector
         
@@ -193,23 +177,23 @@ def calculate_ks_distance(input_matrix, seed=seed, shift_type='min', scale_type=
     return ks_values
 
 # calculates distribution distance (of all rows) per tuning type
-def calculate_distance_values(weights, tuning_type='kl_div', shift_type='min', scale_type='minmax',
+def calculate_distance_values(weights, tuning_type='kl_div', scale_type='minmax',
                               target_distribution='norm', ks_metric='D', percentiles=False, axis=1):
 
     if(percentiles): # exclude outliers and keep values in [1st, 99th] percentiles
         weights = percentile_input_matrix(weights, 1, 99, axis=axis)
     
-    weights = scale_input_matrix(weights, shift_type=shift_type, scale_type=scale_type, axis=axis) # scaling
+    weights = scale_input_matrix(weights, scale_type=scale_type, axis=axis) # scaling
     
     if 'inv' in target_distribution and scale_type != 'minmax':
         scale_type = 'minmax' # inverse distributions are based on minmax scaling (1 - original distirbution)
         print('Note: Inverted distribution to be calculated. Scaling set to minmax.')
         
     if tuning_type == 'kl_div':
-        distance_values = calculate_scaled_kl_div(weights, shift_type=shift_type, scale_type=scale_type,
+        distance_values = calculate_scaled_kl_div(weights, scale_type=scale_type,
                                                   target_distribution=target_distribution, axis=axis)
     elif tuning_type == 'ks_test':
-        distance_values = calculate_ks_distance(weights, shift_type=shift_type, scale_type=scale_type,
+        distance_values = calculate_ks_distance(weights, scale_type=scale_type,
                                                 target_distribution=target_distribution, ks_metric=ks_metric, 
                                                 axis=axis)
 
@@ -217,8 +201,7 @@ def calculate_distance_values(weights, tuning_type='kl_div', shift_type='min', s
 
 # calculates KL divergence from a target distribution for incoming and outcoming weight distributions
 # KL calculated after min-max scaling to [0, 1] + eps; returns averaged incoming and outcoming scores for each neuron
-def calculate_layer_distance_values(weights_dict, layer_index, 
-                                    shift_type='min', scale_type='minmax', 
+def calculate_layer_distance_values(weights_dict, layer_index, scale_type='minmax', 
                                     target_distribution='norm', tuning_type='kl_div', 
                                     ks_metric='D', percentiles=False):
     
@@ -226,19 +209,16 @@ def calculate_layer_distance_values(weights_dict, layer_index,
         raise Exception('Layer index is out of bounds.')
     else:
         outcoming_weights = weights_dict['w'+str(layer_index)]        
-        distance_values = calculate_distance_values(outcoming_weights, tuning_type=tuning_type, shift_type=shift_type, 
-                                                    scale_type=scale_type, target_distribution=target_distribution, 
-                                                    percentiles=percentiles, axis=1)
+        distance_values = calculate_distance_values(outcoming_weights, tuning_type=tuning_type, scale_type=scale_type, 
+                                                    target_distribution=target_distribution, percentiles=percentiles, 
+                                                    axis=1)
         
-        print(distance_values.shape)
         #return distance_values
         if layer_index > 1:
             incoming_weights = weights_dict['w'+str(layer_index-1)]
-            incoming_distance_values = calculate_distance_values(incoming_weights, tuning_type=tuning_type, shift_type=shift_type,
-                                                                 scale_type=scale_type, target_distribution=target_distribution, 
-                                                                 percentiles=percentiles, axis=0)
+            incoming_distance_values = calculate_distance_values(incoming_weights, tuning_type=tuning_type, scale_type=scale_type, 
+                                                                 target_distribution=target_distribution, percentiles=percentiles, axis=0)
             
-            print(incoming_distance_values.shape)
             distance_values = (distance_values + incoming_distance_values) / 2
             
     return distance_values
@@ -263,8 +243,7 @@ def get_layer_inds(boundaries, index):
 #              'random': 
 def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[], 
                  k_selected=4, tuning_type='centrality', dt=[('weight', float)], 
-                 shift_type='min', scale_type='minmax', target_distribution='norm', 
-                 percentiles=False):    
+                 scale_type='minmax', target_distribution='norm', percentiles=False):    
 
     if tuning_type == 'random': # random selection of indices
         select_inds = random.sample(range(len(avail_inds)), k_selected) # indices within avail_inds to be turned off        
@@ -281,8 +260,7 @@ def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[],
             # calculate KL divergence from a target distribution (default: Gaussian)
             print("Calculating distribution distance values per {0}...".format(tuning_type))
             values = calculate_layer_distance_values(weights_dict, layer_index, tuning_type=tuning_type,
-                                                     shift_type=shift_type, scale_type=scale_type, 
-                                                     target_distribution=target_distribution, 
+                                                     scale_type=scale_type, target_distribution=target_distribution, 
                                                      percentiles=percentiles)
         else:
             raise Exception('Invalid tuning type value.')
@@ -361,9 +339,9 @@ def tune_weights(off_indices, current_weights, layer):
     return tf.convert_to_tensor(current_weights['w'+str(layer)], dtype=tf.float32)
 
 # reads data
-def read_dataset(dataset_name='mnist', minmax_scaling=False):
+def read_dataset(dataset_name='mnist', minmax_scaling=False, one_hot_encoding=True):
     if(dataset_name == 'mnist'):
-        mnist = read_data_sets('../data/MNIST_data/', one_hot=True)
+        mnist = read_data_sets('../data/MNIST_data/', one_hot=one_hot_encoding)
 
         X_tr, Y_tr = mnist.train.images, mnist.train.labels
         X_val, Y_val = mnist.validation.images, mnist.validation.labels
@@ -381,22 +359,28 @@ def read_dataset(dataset_name='mnist', minmax_scaling=False):
         
         if(select_correlated_cols):
             X_tr, X_ts = get_correlated_features(X_tr, Y_tr, X_ts, N)
+
+        if one_hot_encoding == False:
+            Y_tr = np.argmax(Y_tr, axis=1)
+            Y_ts = np.argmax(Y_ts, axis=1)
+            
     elif(dataset_name == 'diabetes'):
         diabetes_filename = '../data/csv_data/diabetes_data_processed.csv'
-        diabetes_data =  np.genfromtxt(diabetes_filename, delimiter=',') # diabetes shape: (101767, 36)
+        diabetes_data =  np.genfromtxt(diabetes_filename, delimiter=',', skip_header=1) # diabetes shape: (101766, n_features)
 
         X = diabetes_data[:, 0:-1]
-        Y = diabetes_data[:, -1].astype(int) 
+        Y = diabetes_data[:, -1].astype(int)
         
         X_tr, X_ts, Y_tr, Y_ts = train_test_split(X, Y, test_size=0.2, random_state=seed)
         X_tr, X_val, Y_tr, Y_val = train_test_split(X_tr, Y_tr, test_size=0.25, random_state=seed)
         
         n_values = len(np.unique(Y_tr))
-        Y_ts = np.maximum(Y_ts, 0, Y_ts) # max w/ 0 to fix artifact in data where some y vales < 0
+        Y_ts = np.maximum(Y_ts, 0, Y_ts) # max w/ 0 to fix artifact in data where some y vales < 0 (i.e. ReLU)
 
-        Y_tr = np.eye(n_values)[Y_tr]
-        Y_val = np.eye(n_values)[Y_val]
-        Y_ts = np.eye(n_values)[Y_ts] 
+        if one_hot_encoding:
+            Y_tr = np.eye(n_values)[Y_tr]
+            Y_val = np.eye(n_values)[Y_val]
+            Y_ts = np.eye(n_values)[Y_ts] 
     
     if minmax_scaling:
         scaler = MinMaxScaler()
