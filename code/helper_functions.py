@@ -1,4 +1,5 @@
 import random
+import datetime
 
 import numpy as np
 #from numpy import dtype, shape
@@ -24,6 +25,7 @@ from helper_objects import DataSet
 from tensorflow.python.framework import dtypes
 
 from hyperopt import space_eval
+from fileinput import filename
 
 seed = 1234
 epsilon = 0.00001
@@ -531,3 +533,30 @@ def get_best_result(t, hp_space, metric='accuracy'):
     
     best_trial_result.update(space_eval(hp_space, best_trial_hyperparam_space)) # merge dictionaries
     return best_trial_result # returns merged dictionaries (results+hyperparameter space)
+
+# to write weights into a text file 
+def save_weights_to_file(filename_prefix, weights_dict, epoch, sep="\t"):
+    now = datetime.datetime.now()
+    filename = filename_prefix + "_ep" + str(epoch) + "_weights" + str(now.isoformat()) + ".txt"
+    all_weights_str = ""
+
+    keys_ordered = sorted(weights_dict.keys(), reverse=True)
+    for key in keys_ordered:
+        layer_weights_str = ""
+        weights = weights_dict[key]
+        for row in range(weights.shape[0]):
+            row_str = ""
+            for col in range(weights.shape[1]):
+                row_str = row_str + str(weights[row, col])
+            
+                if col != (weights.shape[1]-1):
+                    row_str = row_str + sep
+
+            layer_weights_str = layer_weights_str + row_str + "\n"
+        
+        all_weights_str = all_weights_str + layer_weights_str
+    
+    output_file = open(filename, "w+")
+    output_file.write(all_weights_str)
+    output_file.close()
+            
