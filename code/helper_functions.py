@@ -535,9 +535,9 @@ def get_best_result(t, hp_space, metric='accuracy'):
     return best_trial_result # returns merged dictionaries (results+hyperparameter space)
 
 # to write weights into a text file 
-def save_weights_to_file(filename_prefix, weights_dict, epoch, sep="\t"):
+def save_weights_to_file(filename_prefix, weights_dict, epoch, seed, sep="\t"):
     now = datetime.datetime.now()
-    filename = filename_prefix + "_ep" + str(epoch) + "_weights" + str(now.isoformat()) + ".txt"
+    filename = filename_prefix + "_ep" + str(epoch) + "_sd" + str(seed) + "_weights" + str(now.isoformat()) + ".txt"
     all_weights_str = ""
 
     keys_ordered = sorted(weights_dict.keys(), reverse=True)
