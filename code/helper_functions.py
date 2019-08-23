@@ -1,5 +1,6 @@
 import random
 import datetime
+import pickle
 
 import numpy as np
 #from numpy import dtype, shape
@@ -25,7 +26,6 @@ from helper_objects import DataSet
 from tensorflow.python.framework import dtypes
 
 from hyperopt import space_eval
-from fileinput import filename
 
 seed = 1234
 epsilon = 0.00001
@@ -96,7 +96,19 @@ def totality_scale(values):
 
 # scale all values to [0,1]
 def minmax_scale(values):
+    original_values = values
     values = (values - values.min())/(values.max()-values.min())
+
+    if(np.sum(abs(original_values)) < 1):
+        print(original_values)
+        sys.exit()
+
+    if(np.isnan(values).any()):
+        print(original_values)
+        print("Min: " +str(original_values.min()))
+        print("Max: " +str(original_values.max()))
+        sys.exit()
+        
     return (values + epsilon)
 
 # removes outliers and returns values in [1st-99th] percentile along axis
@@ -120,6 +132,8 @@ def percentile_input_matrix(input_matrix, bottom_percentile=1, top_percentile=99
 def scale_input_matrix(input_matrix, scale_type='minmax', axis=1):
     if scale_type == 'minmax':
         input_matrix = np.apply_along_axis(minmax_scale, axis, input_matrix)
+        print(input_matrix.shape)
+        print("Check X | Has " +str(np.isnan(input_matrix))+ " NaNs")
     else:
         raise Exception('Invalid scale type for the matrix.')
     
@@ -182,16 +196,23 @@ def calculate_ks_distance(input_matrix, seed=seed, scale_type='minmax',
 def calculate_distance_values(weights, tuning_type='kl_div', scale_type='minmax',
                               target_distribution='norm', ks_metric='D', percentiles=False, axis=1):
 
+    print(weights.shape)
+    print("Check W | Has " +str(np.isnan(weights))+ " NaNs")
+    
     if(percentiles): # exclude outliers and keep values in [1st, 99th] percentiles
         weights = percentile_input_matrix(weights, 1, 99, axis=axis)
     
     weights = scale_input_matrix(weights, scale_type=scale_type, axis=axis) # scaling
-    
+    print(weights.shape)
+    print("Check Y | Has " +str(np.isnan(weights))+ " NaNs")
+        
     if 'inv' in target_distribution and scale_type != 'minmax':
         scale_type = 'minmax' # inverse distributions are based on minmax scaling (1 - original distirbution)
         print('Note: Inverted distribution to be calculated. Scaling set to minmax.')
         
     if tuning_type == 'kl_div':
+        print(weights.shape)
+        print("Check Z | Has " +str(np.isnan(weights))+ " NaNs")
         distance_values = calculate_scaled_kl_div(weights, scale_type=scale_type,
                                                   target_distribution=target_distribution, axis=axis)
     elif tuning_type == 'ks_test':
@@ -534,29 +555,54 @@ def get_best_result(t, hp_space, metric='accuracy'):
     best_trial_result.update(space_eval(hp_space, best_trial_hyperparam_space)) # merge dictionaries
     return best_trial_result # returns merged dictionaries (results+hyperparameter space)
 
-# to write weights into a text file 
-def save_weights_to_file(filename_prefix, weights_dict, epoch, seed, sep="\t"):
+# to write weight, bias dict of matrices into a text file 
+def save_vardict_to_file(filebasename_prefix, vardict, epoch, seed, dict_name="weight", pickling=False, sep="\t"):
     now = datetime.datetime.now()
-    filename = filename_prefix + "_ep" + str(epoch) + "_sd" + str(seed) + "_weights" + str(now.isoformat()) + ".txt"
+    
+    if dict_name == "bias":
+        suffix = "es"
+    elif dict_name == "weight":
+        suffix = "s"
+    else:
+        raise Exception('Invalid dict_name.')
+    
+    filebasename = filebasename_prefix + "_ep" + str(epoch) + "_sd" + str(seed) + "_" + dict_name + suffix + "_" + str(now.isoformat())
     all_weights_str = ""
 
-    keys_ordered = sorted(weights_dict.keys(), reverse=True)
+    # check for pickling
+    if pickling:
+        pickle_file = open(filebasename + ".pkl", "wb")
+        pickle.dump(vardict, pickle_file)
+
+    keys_ordered = sorted(vardict.keys(), reverse=True)
     for key in keys_ordered:
         layer_weights_str = ""
-        weights = weights_dict[key]
-        for row in range(weights.shape[0]):
-            row_str = ""
-            for col in range(weights.shape[1]):
-                row_str = row_str + str(weights[row, col])
-            
-                if col != (weights.shape[1]-1):
-                    row_str = row_str + sep
+        weights = vardict[key]
 
-            layer_weights_str = layer_weights_str + row_str + "\n"
+        if(dict_name == "bias"):
+            layer_weights_str = ""
+            for ind in range(weights.shape[0]):
+                layer_weights_str = layer_weights_str + str(weights[ind])
+                
+                if ind != (weights.shape[0]-1):
+                    layer_weights_str = layer_weights_str + sep
+                else:
+                    layer_weights_str = layer_weights_str + "\n"
+        elif(dict_name == "weight"):
+            for row in range(weights.shape[0]):
+                row_str = ""
+                for col in range(weights.shape[1]):
+                    row_str = row_str + str(weights[row, col])
+                
+                    if col != (weights.shape[1]-1):
+                        row_str = row_str + sep
+    
+                layer_weights_str = layer_weights_str + row_str + "\n"
         
         all_weights_str = all_weights_str + layer_weights_str
     
-    output_file = open(filename, "w+")
+    output_file = open(filebasename + ".txt", "w+")
     output_file.write(all_weights_str)
+    output_file.close()
     output_file.close()
             
