@@ -47,9 +47,6 @@ def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
         activation_function = activ_funcs[l]
         layer_type = layer_types[l]
 
-        if(l == len(activ_funcs)-1):
-            activation_function = 'linear'
-            
         layer = get_layer(input_tensor, weights[weights_key], biases[biases_key], activation_function, layer_type)
         layers.append(layer)
 
