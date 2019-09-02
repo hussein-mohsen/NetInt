@@ -47,6 +47,9 @@ def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
         activation_function = activ_funcs[l]
         layer_type = layer_types[l]
 
+        if(l == len(activ_funcs)-1):
+            activation_function = 'linear'
+            
         layer = get_layer(input_tensor, weights[weights_key], biases[biases_key], activation_function, layer_type)
         layers.append(layer)
 
@@ -93,19 +96,7 @@ def totality_scale(values):
 
 # scale all values to [0,1]
 def minmax_scale(values):
-    original_values = values
     values = (values - values.min())/(values.max()-values.min())
-
-    if(np.sum(abs(original_values)) < 1):
-        print(original_values)
-        sys.exit()
-
-    if(np.isnan(values).any()):
-        print(original_values)
-        print("Min: " +str(original_values.min()))
-        print("Max: " +str(original_values.max()))
-        sys.exit()
-        
     return (values + epsilon)
 
 # removes outliers and returns values in [1st-99th] percentile along axis
@@ -126,36 +117,52 @@ def percentile_input_matrix(input_matrix, bottom_percentile=1, top_percentile=99
     return input_matrix
 
 # scales empirical matrix to [0,1] per scale_type
-def scale_input_matrix(input_matrix, scale_type='minmax', axis=1):
-    if scale_type == 'minmax':
-        input_matrix = np.apply_along_axis(minmax_scale, axis, input_matrix)
-        print(input_matrix.shape)
-        print("Check X | Has " +str(np.isnan(input_matrix))+ " NaNs")
-    else:
-        raise Exception('Invalid scale type for the matrix.')
+def scale_input_matrix(input_matrix, shift_type='min', scale_type='minmax', axis=1):
+    if scale_type == 'totality':
+        if shift_type == 'min':
+            input_matrix += abs(input_matrix.min())
+        elif shift_type == 'abs':
+            input_matrix = abs(input_matrix)
+        else:
+            raise Exception('Invalid shift type.')
     
+        input_matrix = np.apply_along_axis(totality_scale, axis, input_matrix)
+    elif scale_type == 'minmax':
+        input_matrix = np.apply_along_axis(minmax_scale, axis, input_matrix)
+
     return input_matrix
 
 # scales input vector to [0,1] per scale_type
-def scale_input_vector(input_vector, scale_type='minmax'):
-    if scale_type == 'minmax':
+def scale_input_vector(input_vector, scale_type='minmax', shift_type='min'):
+    if scale_type == 'totality':
+        if shift_type == 'min':
+            input_vector += abs(input_vector.min())
+        elif shift_type == 'abs':
+            input_vector = abs(input_vector)
+        else:
+            raise Exception('Invalid shift type.')
+        
+        input_vector = totality_scale(input_vector)
+    elif scale_type == 'minmax':
         input_vector = minmax_scale(input_vector)
-    else:
-        raise Exception('Invalid scale type for the vector.')
-    
+
     return input_vector
 
 # returns a pmf from of a vectors histogram
-def calculate_histogram_pmf(vector):
-    vector_histogram, bins = np.histogram(vector, bins=min(50, int(len(vector)/2)))
+def calculate_histogram_pmf(vector, n_bins=10):
+    vector_histogram, bins = np.histogram(vector, bins=n_bins)
     return totality_scale(vector_histogram)
 
 # Calculate KL div between scaled weights (per row) with scaled target distribution
-def calculate_scaled_kl_div(input_matrix, seed=seed, scale_type='minmax', 
+def calculate_scaled_kl_div(input_matrix, seed=seed,
+                            shift_type= 'min', scale_type='minmax',
                             target_distribution='norm', axis=1):
+    
+    input_matrix = scale_input_matrix(input_matrix, shift_type=shift_type, scale_type=scale_type, axis=axis) # scaling
+    input_matrix = np.apply_along_axis(calculate_histogram_pmf, axis, input_matrix) # histograms
 
     if target_distribution == 'norm':
-        target_dist = np.random.normal(0, 0.1, size=(input_matrix.shape[axis], ))
+        target_dist = np.random.normal(1, 0.1, (1, input_matrix.shape[axis]))
     elif 'powerlaw' in target_distribution: # power law and inverse power law distribution
         target_dist = np.random.power(a=0.35, size=(input_matrix.shape[axis], ))
     else:
@@ -173,8 +180,9 @@ def calculate_scaled_kl_div(input_matrix, seed=seed, scale_type='minmax',
     return kl_values
     
 # Calculate KS distance (D or p-)value between scaled weights (per row) with scaled target distribution
-def calculate_ks_distance(input_matrix, seed=seed, scale_type='minmax',
+def calculate_ks_distance(input_matrix, seed=seed, shift_type='min', scale_type='minmax',
                           target_distribution='norm', ks_metric='D', axis=1):
+    
     if target_distribution == 'norm':
         target_dist = np.random.normal(0, 0.1, size=(input_matrix.shape[axis], ))
     elif 'powerlaw' in target_distribution: # power law and inverse power law distribution
@@ -190,55 +198,47 @@ def calculate_ks_distance(input_matrix, seed=seed, scale_type='minmax',
     return ks_values
 
 # calculates distribution distance (of all rows) per tuning type
-def calculate_distance_values(weights, tuning_type='kl_div', scale_type='minmax',
-                              target_distribution='norm', ks_metric='D', percentiles=False, axis=1):
-
-    print(weights.shape)
-    print("Check W | Has " +str(np.isnan(weights))+ " NaNs")
-    
+def calculate_distance_values(weights, tuning_type='kl_div', shift_type='min', scale_type='minmax',
+                              target_distribution='norm', ks_metric='D',percentiles=False, axis=1):
     if(percentiles): # exclude outliers and keep values in [1st, 99th] percentiles
         weights = percentile_input_matrix(weights, 1, 99, axis=axis)
-    
+
     weights = scale_input_matrix(weights, scale_type=scale_type, axis=axis) # scaling
-    print(weights.shape)
-    print("Check Y | Has " +str(np.isnan(weights))+ " NaNs")
         
     if 'inv' in target_distribution and scale_type != 'minmax':
         scale_type = 'minmax' # inverse distributions are based on minmax scaling (1 - original distirbution)
         print('Note: Inverted distribution to be calculated. Scaling set to minmax.')
         
     if tuning_type == 'kl_div':
-        print(weights.shape)
-        print("Check Z | Has " +str(np.isnan(weights))+ " NaNs")
-        distance_values = calculate_scaled_kl_div(weights, scale_type=scale_type,
-                                                  target_distribution=target_distribution, axis=axis)
+        distance_values = calculate_scaled_kl_div(weights, scale_type=scale_type, target_distribution=target_distribution, 
+                                                  axis=axis)
     elif tuning_type == 'ks_test':
-        distance_values = calculate_ks_distance(weights, scale_type=scale_type,
-                                                target_distribution=target_distribution, ks_metric=ks_metric, 
-                                                axis=axis)
+        distance_values = calculate_ks_distance(weights, scale_type=scale_type, target_distribution=target_distribution, 
+                                                ks_metric=ks_metric, axis=axis)
 
     return distance_values
 
 # calculates KL divergence from a target distribution for incoming and outcoming weight distributions
 # KL calculated after min-max scaling to [0, 1] + eps; returns averaged incoming and outcoming scores for each neuron
-def calculate_layer_distance_values(weights_dict, layer_index, scale_type='minmax', 
+def calculate_layer_distance_values(weights_dict, layer_index, 
+                                    shift_type='min', scale_type='minmax', 
                                     target_distribution='norm', tuning_type='kl_div', 
-                                    ks_metric='D', percentiles=False):
-    
+                                    ks_metric='D', percentiles=False):    
     if layer_index > len(weights_dict): # output layer or erroneous index
         raise Exception('Layer index is out of bounds.')
     else:
         outcoming_weights = weights_dict['w'+str(layer_index)]        
-        distance_values = calculate_distance_values(outcoming_weights, tuning_type=tuning_type, scale_type=scale_type, 
-                                                    target_distribution=target_distribution, percentiles=percentiles, 
-                                                    axis=1)
-        
-        #return distance_values
+        distance_values = calculate_distance_values(outcoming_weights, tuning_type=tuning_type,shift_type=shift_type, 
+                                                    scale_type=scale_type, target_distribution=target_distribution, 
+                                                    percentiles=percentiles, axis=1)
+
+    
         if layer_index > 1:
             incoming_weights = weights_dict['w'+str(layer_index-1)]
-            incoming_distance_values = calculate_distance_values(incoming_weights, tuning_type=tuning_type, scale_type=scale_type, 
-                                                                 target_distribution=target_distribution, percentiles=percentiles, axis=0)
-            
+            incoming_distance_values = calculate_distance_values(incoming_weights, tuning_type=tuning_type, shift_type=shift_type,
+                                                                 scale_type=scale_type, target_distribution=target_distribution, 
+                                                                 percentiles=percentiles, axis=0)
+
             distance_values = (distance_values + incoming_distance_values) / 2
             
     return distance_values
@@ -263,8 +263,8 @@ def get_layer_inds(boundaries, index):
 #              'random': 
 def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[], 
                  k_selected=4, tuning_type='centrality', dt=[('weight', float)], 
-                 scale_type='minmax', target_distribution='norm', percentiles=False):    
-
+                 shift_type='min', scale_type='minmax', target_distribution='norm',
+                 percentiles=False):    
     if tuning_type == 'random': # random selection of indices
         select_inds = random.sample(range(len(avail_inds)), k_selected) # indices within avail_inds to be turned off        
     else:
@@ -280,7 +280,8 @@ def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[],
             # calculate KL divergence from a target distribution (default: Gaussian)
             print("Calculating distribution distance values per {0}...".format(tuning_type))
             values = calculate_layer_distance_values(weights_dict, layer_index, tuning_type=tuning_type,
-                                                     scale_type=scale_type, target_distribution=target_distribution, 
+                                                     shift_type=shift_type, scale_type=scale_type, 
+                                                     target_distribution=target_distribution,
                                                      percentiles=percentiles)
         else:
             raise Exception('Invalid tuning type value.')
@@ -386,22 +387,22 @@ def read_dataset(dataset_name='mnist', minmax_scaling=False, one_hot_encoding=Tr
             
     elif(dataset_name == 'diabetes'):
         diabetes_filename = '../data/csv_data/diabetes_data_processed.csv'
-        diabetes_data =  np.genfromtxt(diabetes_filename, delimiter=',', skip_header=1) # diabetes shape: (101766, n_features)
+        diabetes_data =  np.genfromtxt(diabetes_filename, delimiter=',') # diabetes shape: (101767, 36)
 
         X = diabetes_data[:, 0:-1]
-        Y = diabetes_data[:, -1].astype(int)
+        Y = diabetes_data[:, -1].astype(int) 
         
         X_tr, X_ts, Y_tr, Y_ts = train_test_split(X, Y, test_size=0.2, random_state=seed)
         X_tr, X_val, Y_tr, Y_val = train_test_split(X_tr, Y_tr, test_size=0.25, random_state=seed)
         
         n_values = len(np.unique(Y_tr))
-        Y_ts = np.maximum(Y_ts, 0, Y_ts) # max w/ 0 to fix artifact in data where some y vales < 0 (i.e. ReLU)
+        Y_ts = np.maximum(Y_ts, 0, Y_ts) # max w/ 0 to fix artifact in data where some y vales < 0
 
         if one_hot_encoding:
             Y_tr = np.eye(n_values)[Y_tr]
             Y_val = np.eye(n_values)[Y_val]
             Y_ts = np.eye(n_values)[Y_ts] 
-    
+            
     if minmax_scaling:
         scaler = MinMaxScaler()
         X_tr = scaler.fit_transform(X_tr)
@@ -450,7 +451,7 @@ def get_next_even_batch(X_tr, Y_tr, start, batch_size, epoch, seed=seed, shuffle
 
             X_tr = X_tr[data_order]
             Y_tr = Y_tr[data_order]
-
+        
         N_new_points = batch_size - N_remaining_points
         new_points = X_tr[0:N_new_points]
         new_labels = Y_tr[0:N_new_points]
@@ -552,6 +553,7 @@ def get_best_result(t, hp_space, metric='accuracy'):
     best_trial_result.update(space_eval(hp_space, best_trial_hyperparam_space)) # merge dictionaries
     return best_trial_result # returns merged dictionaries (results+hyperparameter space)
 
+
 # to write weight, bias dict of matrices into a text file 
 def save_vardict_to_file(filebasename_prefix, vardict, epoch, seed, dict_name="weight", pickling=False, sep="\t"):
     now = datetime.datetime.now()
@@ -602,4 +604,3 @@ def save_vardict_to_file(filebasename_prefix, vardict, epoch, seed, dict_name="w
     output_file.write(all_weights_str)
     output_file.close()
     output_file.close()
-            

@@ -3,5 +3,11 @@
 		"types": ["ff", "ff", "ff", "ff"],
 		"sizes": [784, 512, 512, 10],
 		"activ_funcs": ["linear", "linear", "linear"]
+    },
+    
+    "training_params": {
+    	"epochs": 300,
+    	"learning_rate": 0.001,
+    	"batch_size": 100
     }
 }

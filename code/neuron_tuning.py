@@ -35,12 +35,14 @@ display_step = 1
 
 # Tuning parameters
 tuning_type = 'centrality' # tuning type:Centrality-based (default) or KL Divergence
+scale_type = 'minmax'
 shift_type = 'min' # type of shifting the target distribution to positive values in KL div-based tuning
 target_distribution = 'norm' # target distribution in KL div-based tuning
 tuning_step = 1 # number of step(s) at which centrality-based tuning periodically takes place
 k_selected=1 # number of neurons selected to be tuned ('turned off') each round
 n_tuned_layers = 1 # number of layers to be tuned; a value of 2 means layers 2 and 3 (1st & 2nd hidden layers will be tuned)
-    
+percentiles=False
+
 # Parse input arguments
 # sample command with tuning: python tune_weights.py --tune 1
 parser = argparse.ArgumentParser(description="Argument Parser")
@@ -106,6 +108,10 @@ with open(input_json_dir+input_json) as json_file:
     layer_types = json_data['layers']['types'] # In, h1, h2, ..., Out
     activ_funcs = json_data['layers']['activ_funcs'] # h1, h2, ..., Out
 
+    training_epochs = json_data['training_params']['epochs']
+    learning_rate = json_data['training_params']['learning_rate']
+    batch_size = json_data['training_params']['batch_size']
+    
 # Complement available indices above. Updated at each neuron tuning step.
 off_indices = get_arrdict(layer_sizes, 'empty', 'o')
 avail_indices = get_arrdict(layer_sizes, 'range', 'a')
@@ -174,8 +180,8 @@ with tf.Session() as sess:
                 print("Tuning on layer {}".format(l))        
                 # create weight graph
                 current_off_inds = get_off_inds(weights_dict, avail_indices['a'+str(l)], layer_index=l, k_selected=k_selected, 
-                                                tuning_type=tuning_type, shift_type=shift_type, target_distribution=target_distribution,
-                                                percentiles=True)
+                                                tuning_type=tuning_type, shift_type=shift_type, scale_type=scale_type,
+                                                target_distribution=target_distribution, percentiles=percentiles)
                 
                 # update available and off_indices (i.e. indices of tuned neurons)
                 avail_indices['a'+str(l)] = np.delete(avail_indices['a'+str(l)], current_off_inds)
@@ -184,7 +190,7 @@ with tf.Session() as sess:
                 # get a tensor with off_inds neurons turned off
                 tuned_weights['w'+str(l)] = tune_weights(off_indices['o'+str(l)], weights_dict, l)
                 print("Weight tuning done.")
-    
+
             # run neuron tuning operation
             if(n_tuned_layers == 1):
                 sess.run(neuron_tuning_op2)
