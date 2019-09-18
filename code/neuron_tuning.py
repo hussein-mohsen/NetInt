@@ -72,10 +72,6 @@ if args.sd:
     set_seed(seed) # set same seed in helper
     print("Randomization seed set to {}".format(seed))
 
-if args.ep:
-    training_epochs = args.ep
-    print("Epochs set to {}".format(training_epochs))
-
 if args.nt:
     n_tuned_layers = args.nt
     print("Number of tuned layers set to {}".format(n_tuned_layers))
@@ -111,6 +107,8 @@ with open(input_json_dir+input_json) as json_file:
     training_epochs = json_data['training_params']['epochs']
     learning_rate = json_data['training_params']['learning_rate']
     batch_size = json_data['training_params']['batch_size']
+    
+    print('Layer sizes: {0} \n Layer types: {1} \n Activation functions: {2} \n Epochs: {3} \n Learning rate: {4} \n Batch size: {5}'.format(layer_sizes, layer_types, activ_funcs, training_epochs, learning_rate, batch_size))
     
 # Complement available indices above. Updated at each neuron tuning step.
 off_indices = get_arrdict(layer_sizes, 'empty', 'o')
@@ -178,14 +176,16 @@ with tf.Session() as sess:
                 
             for l in range(2, tuning_layer_end):
                 print("Tuning on layer {}".format(l))        
-                # create weight graph
-                current_off_inds = get_off_inds(weights_dict, avail_indices['a'+str(l)], layer_index=l, k_selected=k_selected, 
-                                                tuning_type=tuning_type, shift_type=shift_type, scale_type=scale_type,
-                                                target_distribution=target_distribution, percentiles=percentiles)
-                
+
+                current_off_indices = off_indices['o'+str(l)]
+                #print(current_off_indices)
+                new_off_inds = get_off_inds(weights_dict, avail_inds=avail_indices['a'+str(l)], off_inds=current_off_indices, 
+                                            layer_index=l, k_selected=k_selected, tuning_type=tuning_type, shift_type=shift_type, 
+                                            scale_type=scale_type, target_distribution=target_distribution, percentiles=percentiles)
+
                 # update available and off_indices (i.e. indices of tuned neurons)
-                avail_indices['a'+str(l)] = np.delete(avail_indices['a'+str(l)], current_off_inds)
-                off_indices['o'+str(l)] = np.append(off_indices['o'+str(l)], current_off_inds)
+                avail_indices['a'+str(l)] = np.delete(avail_indices['a'+str(l)], np.searchsorted(avail_indices['a'+str(l)], new_off_inds))
+                off_indices['o'+str(l)] = np.append(off_indices['o'+str(l)], new_off_inds)
 
                 # get a tensor with off_inds neurons turned off
                 tuned_weights['w'+str(l)] = tune_weights(off_indices['o'+str(l)], weights_dict, l)

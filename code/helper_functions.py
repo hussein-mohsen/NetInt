@@ -75,7 +75,7 @@ def get_layer(x, w, b, activ_fun, layer_type='ff'):
 # calculates KL divergence of two distributions
 def kl_div(empirical, target_dist):
     if(abs(empirical.sum()-1) > 0.05 or abs(target_dist.sum()-1) > 0.05):
-        print("Warning: one or more distributions do not sum up to 1")
+        print("Warning: one or more distributions do not sum up to 1.")
         
     kl_div_value = (empirical * np.log(empirical/target_dist)).sum()
     return kl_div_value
@@ -261,38 +261,46 @@ def get_layer_inds(boundaries, index):
 # tuning_type: 'centrality' (default: betweenness centrality) 
 #              'kl_div' (default: with Gaussian)   
 #              'random': 
-def get_off_inds(weights_dict, avail_inds, layer_index, input_list=[], 
+def get_off_inds(weights_dict, avail_inds, off_inds, layer_index, input_list=[], 
                  k_selected=4, tuning_type='centrality', dt=[('weight', float)], 
                  shift_type='min', scale_type='minmax', target_distribution='norm',
-                 percentiles=False):    
-    if tuning_type == 'random': # random selection of indices
-        select_inds = random.sample(range(len(avail_inds)), k_selected) # indices within avail_inds to be turned off        
+                 percentiles=False):
+    if(len(avail_inds) == 0):
+        select_inds = [-1]
+        print("Warning: no more neurons to tune.")
     else:
-        if tuning_type == 'centrality': # sorted centrality-based selection
-            weight_graph, layer_boundaries = create_weight_graph(weights_dict, layer_index)
-            weight_graph = weight_graph.astype(dt)
-            weight_G = nx.from_numpy_matrix(weight_graph) # create graph object
-            
-            # calculate centrality measure values
-            print("Calculating centrality measures...")
-            values = np.array(list(nx.betweenness_centrality(weight_G, k=7, weight='weight').values()))
-        elif tuning_type == 'kl_div' or tuning_type == 'ks_test':
-            # calculate KL divergence from a target distribution (default: Gaussian)
-            print("Calculating distribution distance values per {0}...".format(tuning_type))
-            values = calculate_layer_distance_values(weights_dict, layer_index, tuning_type=tuning_type,
-                                                     shift_type=shift_type, scale_type=scale_type, 
-                                                     target_distribution=target_distribution,
-                                                     percentiles=percentiles)
+        if tuning_type == 'random': # random selection of indices
+            select_inds = random.sample(range(len(avail_inds)), k_selected) # indices within avail_inds to be turned off        
         else:
-            raise Exception('Invalid tuning type value.')
-            
-        # select nodes with lowest k_selected to tune
-        values = values[avail_inds]
-        inds = np.argsort(values)
-        select_inds = inds[0:k_selected]
+            if tuning_type == 'centrality': # sorted centrality-based selection
+                weight_graph, layer_boundaries = create_weight_graph(weights_dict, layer_index)
+                weight_graph = weight_graph.astype(dt)
+                weight_G = nx.from_numpy_matrix(weight_graph) # create graph object
+                
+                # calculate centrality measure values
+                print("Calculating centrality measures...")
+                values = np.array(list(nx.betweenness_centrality(weight_G, k=7, weight='weight').values()))
+                
+                # select the nodes corresponding to the layer since the graph = its nodes + those of preceding 
+                # and following layers
+                layer_start = layer_boundaries[0]; layer_end = layer_boundaries[1]
+                values = values[layer_start:layer_end]
+            elif tuning_type == 'kl_div' or tuning_type == 'ks_test':
+                # calculate KL divergence from a target distribution (default: Gaussian)
+                print("Calculating distribution distance values per {0}...".format(tuning_type))
+                values = calculate_layer_distance_values(weights_dict, layer_index, tuning_type=tuning_type,
+                                                         shift_type=shift_type, scale_type=scale_type, 
+                                                         target_distribution=target_distribution,
+                                                         percentiles=percentiles)
+            else:
+                raise Exception('Invalid tuning type value.')
     
-    off_inds = avail_inds[select_inds]
-    return off_inds # return array of indices to be tuned
+            # select nodes with lowest k_selected to tune
+            inds = np.argsort(values)
+            inds = inds[~np.in1d(inds, off_inds)] # remove current off_inds
+            select_inds = inds[0:k_selected]
+
+    return select_inds # return array of indices to be tuned
 
 # helper function that pads a matrix to create an NxN graph used to
 # create weight graphs on which centrality measures are calculated
