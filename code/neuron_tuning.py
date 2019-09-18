@@ -8,11 +8,11 @@ import json
 
 import numpy as np
 from numpy import dtype, shape
+from numpy.random.mtrand import shuffle
 
 import tensorflow as tf
-
 from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph, read_dataset, get_next_batch, get_next_even_batch, set_seed, get_layer, get_vardict, get_arrdict, multilayer_perceptron, ks_test
-from numpy.random.mtrand import shuffle
+from sklearn.metrics import accuracy_score, precision_score, roc_auc_score
 
 #from tensorflow.examples.tutorials.mnist import input_data
 #mnist = input_data.read_data_sets("MNIST_data/", one_hot=True)
@@ -216,10 +216,15 @@ with tf.Session() as sess:
             
     print("Optimization Done.")
 
-    # Test model
     pred = tf.nn.softmax(logits)  # Apply softmax to logits
-    correct_prediction = tf.equal(tf.argmax(pred, 1), tf.argmax(Y, 1))
+
+    # Test model    
+    ts_predictions = sess.run(pred, feed_dict={X: X_ts, Y: Y_ts})
+    accuracy = accuracy_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
+    print("Accuracy:", accuracy)
+     
+    precision = precision_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
+    print("Precision:", precision)
     
-    # Calculate accuracy
-    accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
-    print("Accuracy:", accuracy.eval({X: X_ts, Y: Y_ts}))
+    auc = roc_auc_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
+    print("AUC ROC:", auc)
