@@ -91,13 +91,13 @@ def ks_test(empirical, target_dist, metric='D'):
 
 # scales values s.t. sum = 1
 def totality_scale(values):
-    total = values.sum()
-    return ((values/total) + epsilon)
+    total = values.sum() + epsilon
+    return (values/total)
 
 # scale all values to [0,1]
 def minmax_scale(values):
-    values = (values - values.min())/(values.max()-values.min())
-    return (values + epsilon)
+    values = (values - values.min())/((values.max() - values.min() + epsilon))
+    return values
 
 # removes outliers and returns values in [1st-99th] percentile along axis
 def percentile_input_matrix(input_matrix, bottom_percentile=1, top_percentile=99, axis=1):
@@ -157,7 +157,7 @@ def calculate_histogram_pmf(vector, n_bins=10):
 def calculate_scaled_kl_div(input_matrix, seed=seed,
                             shift_type= 'min', scale_type='minmax',
                             target_distribution='norm', axis=1):
-    
+
     input_matrix = scale_input_matrix(input_matrix, shift_type=shift_type, scale_type=scale_type, axis=axis) # scaling
     input_matrix = np.apply_along_axis(calculate_histogram_pmf, axis, input_matrix) # histograms
 
@@ -204,7 +204,7 @@ def calculate_distance_values(weights, tuning_type='kl_div', shift_type='min', s
         weights = percentile_input_matrix(weights, 1, 99, axis=axis)
 
     weights = scale_input_matrix(weights, scale_type=scale_type, axis=axis) # scaling
-        
+
     if 'inv' in target_distribution and scale_type != 'minmax':
         scale_type = 'minmax' # inverse distributions are based on minmax scaling (1 - original distirbution)
         print('Note: Inverted distribution to be calculated. Scaling set to minmax.')

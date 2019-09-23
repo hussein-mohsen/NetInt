@@ -203,7 +203,7 @@ with tf.Session() as sess:
 
             _, c = sess.run([train_op, loss_op], feed_dict={X: batch_x,
                                                             Y: batch_y})
-            
+
             # Compute average loss
             avg_cost += c / total_batch
             
@@ -222,9 +222,10 @@ with tf.Session() as sess:
     ts_predictions = sess.run(pred, feed_dict={X: X_ts, Y: Y_ts})
     accuracy = accuracy_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
     print("Accuracy:", accuracy)
-     
-    precision = precision_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
-    print("Precision:", precision)
-    
-    auc = roc_auc_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
-    print("AUC ROC:", auc)
+
+    if(n_classes == 2):
+        precision = precision_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
+        print("Precision:", precision)
+        
+        auc = roc_auc_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
+        print("AUC ROC:", auc)
