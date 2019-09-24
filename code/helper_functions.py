@@ -368,10 +368,11 @@ def tune_weights(off_indices, current_weights, layer):
     return tf.convert_to_tensor(current_weights['w'+str(layer)], dtype=tf.float32)
 
 # reads data
-def read_dataset(dataset_name='mnist', minmax_scaling=False, one_hot_encoding=True):
+def read_dataset(dataset_name='mnist', one_hot_encoding=True):
+    minmax_scaling = False
     if(dataset_name == 'mnist'):
         mnist = read_data_sets('../data/MNIST_data/', one_hot=one_hot_encoding)
-
+        
         X_tr, Y_tr = mnist.train.images, mnist.train.labels
         X_val, Y_val = mnist.validation.images, mnist.validation.labels
         X_ts, Y_ts = mnist.test.images, mnist.test.labels
@@ -405,7 +406,9 @@ def read_dataset(dataset_name='mnist', minmax_scaling=False, one_hot_encoding=Tr
         
         n_values = len(np.unique(Y_tr))
         Y_ts = np.maximum(Y_ts, 0, Y_ts) # max w/ 0 to fix artifact in data where some y vales < 0
-
+        
+        minmax_scaling = True
+        
         if one_hot_encoding:
             Y_tr = np.eye(n_values)[Y_tr]
             Y_val = np.eye(n_values)[Y_val]
