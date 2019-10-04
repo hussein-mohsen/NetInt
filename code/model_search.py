@@ -1,4 +1,4 @@
-from helper_functions import read_dataset, multilayer_perceptron, get_vardict, unpack_dict, get_best_result
+from helper_functions import read_dataset, multilayer_perceptron, get_vardict, set_seed, unpack_dict, get_best_result
 
 from hyperopt import fmin, hp, Trials, tpe, space_eval, STATUS_OK
 import tensorflow as tf
@@ -20,7 +20,7 @@ import random
 # X and Y are tf.placeholders, D is a Dataset object
 def train_model(space):
     dataset_name = 'diabetes' #'diabetes' #'psychencode' #'mnist'
-    D = read_dataset(dataset_name=dataset_name, minmax_scaling=True)
+    D = read_dataset(dataset_name=dataset_name)
     X_tr, Y_tr = D.train.points, D.train.labels
     X_ts, Y_ts = D.test.points, D.test.labels
 
@@ -95,7 +95,7 @@ def train_model(space):
             if(epoch % display_step == 0): 
                 # Test model    
                 pred = tf.nn.softmax(logits)  # Apply softmax to logits
-                                
+
                 ts_predictions = sess.run(pred, feed_dict={X: X_ts, Y: Y_ts})
                 accuracy = accuracy_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
                 print("Accuracy: {0}".format(accuracy))
@@ -118,8 +118,7 @@ def train_model(space):
 def main():
     print("Start")
     
-    np.random.seed(1234)
-    random.seed(1234)
+    set_seed(1234)
     
     '''
     # to train a single model

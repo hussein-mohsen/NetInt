@@ -8,10 +8,9 @@ import json
 
 import numpy as np
 from numpy import dtype, shape
-from numpy.random.mtrand import shuffle
 
 import tensorflow as tf
-from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph, read_dataset, get_next_batch, get_next_even_batch, set_seed, get_layer, get_vardict, get_arrdict, multilayer_perceptron, ks_test
+from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph, read_dataset, set_seed, get_layer, get_vardict, get_arrdict, multilayer_perceptron, ks_test, sort_features
 from sklearn.metrics import accuracy_score, precision_score, roc_auc_score
 
 #from tensorflow.examples.tutorials.mnist import input_data
@@ -28,9 +27,7 @@ input_json = 'mnist_net.json'
 
 # Set random seed for replication
 seed=1234
-tf.set_random_seed(seed)
-np.random.seed(seed=seed)
-random.seed(seed)
+set_seed(seed=seed)
 display_step = 1
 
 # Tuning parameters
@@ -39,7 +36,7 @@ scale_type = 'minmax'
 shift_type = 'min' # type of shifting the target distribution to positive values in KL div-based tuning
 target_distribution = 'norm' # target distribution in KL div-based tuning
 tuning_step = 1 # number of step(s) at which centrality-based tuning periodically takes place
-k_selected=1 # number of neurons selected to be tuned ('turned off') each round
+k_selected = 1 # number of neurons selected to be tuned ('turned off') each round
 n_tuned_layers = 1 # number of layers to be tuned; a value of 2 means layers 2 and 3 (1st & 2nd hidden layers will be tuned)
 percentiles=False
 
@@ -49,7 +46,6 @@ parser = argparse.ArgumentParser(description="Argument Parser")
 parser.add_argument("--ts", type=int, help="Tuning step size")
 parser.add_argument("--tt", help="Tuning type")
 parser.add_argument("--sd", type=int, help="Randomization seed")
-parser.add_argument("--ep", type=int, help="Number of epochs")
 parser.add_argument("--nt", type=int, help="Number of tuned layers")
 parser.add_argument("--ds", help="Dataset name")
 parser.add_argument("--ij", help="Input network JSON file")
@@ -69,9 +65,8 @@ if args.tt:
     
 if args.sd:
     seed = args.sd
-    set_seed(seed) # set same seed in helper
+    set_seed(seed=seed) # set same seed in helper
     print("Randomization seed set to {}".format(seed))
-
 if args.nt:
     n_tuned_layers = args.nt
     print("Number of tuned layers set to {}".format(n_tuned_layers))
@@ -122,9 +117,9 @@ Y = tf.placeholder("float", [None, n_classes])
 weight_init = 'norm'
 bias_init = 'norm'
 
-weights = get_vardict(layer_sizes, weight_init, 'weight', 'w')
-tuned_weights = get_vardict(layer_sizes, 'zeros', 'weight', 'w')
-biases = get_vardict(layer_sizes, bias_init, 'bias', 'b')
+weights = get_vardict(layer_sizes, weight_init, 'weight', 'w', seed=seed)
+tuned_weights = get_vardict(layer_sizes, 'zeros', 'weight', 'w', seed=seed)
+biases = get_vardict(layer_sizes, bias_init, 'bias', 'b', seed=seed)
 
 # Neuron tuning tf operation
 neuron_tuning_op2 = tf.assign(weights['w2'], tuned_weights['w2'])
@@ -141,13 +136,12 @@ train_op = optimizer.minimize(loss_op)
 # Initialize the variables
 init = tf.global_variables_initializer()
 
-D = read_dataset(dataset_name)
+D = read_dataset(dataset_name, seed=seed)
 X_tr, Y_tr = D.train.points, D.train.labels
 X_ts, Y_ts = D.test.points, D.test.labels
 
 with tf.Session() as sess:
     sess.run(init)
-
     print("Training has started.")
     
     if(X_tr.shape[0] < 1000):
@@ -229,3 +223,17 @@ with tf.Session() as sess:
         
         auc = roc_auc_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
         print("AUC ROC:", auc)
+        
+    weights_dict = sess.run(weights)
+    
+    #sorted_input_features = sort_features(weights_dict, scoring_func='abs_avg')
+    #print(sorted_input_features)
+    
+    #sorted_input_features = sort_features(weights_dict, scoring_func='avg')
+    #print(sorted_input_features)
+    
+    #sorted_input_features = sort_features(weights_dict, scoring_func='abs_sum')
+    #print(sorted_input_features)
+    
+    #sorted_input_features = sort_features(weights_dict, scoring_func='std')
+    #print(sorted_input_features)

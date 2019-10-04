@@ -27,7 +27,6 @@ from tensorflow.python.framework import dtypes
 
 from hyperopt import space_eval
 
-seed = 1234
 epsilon = 0.00001
 
 # Create the MLP
@@ -76,8 +75,8 @@ def get_layer(x, w, b, activ_fun, layer_type='ff'):
 def kl_div(empirical, target_dist):
     if(abs(empirical.sum()-1) > 0.05 or abs(target_dist.sum()-1) > 0.05):
         print("Warning: one or more distributions do not sum up to 1.")
-        
-    kl_div_value = (empirical * np.log(empirical/target_dist)).sum()
+
+    kl_div_value = (empirical * np.log((empirical + epsilon)/(target_dist + epsilon))).sum()
     return kl_div_value
 
 # calculate KS test to compare distance between CDFs of empirical and target_dist samples
@@ -154,7 +153,7 @@ def calculate_histogram_pmf(vector, n_bins=10):
     return totality_scale(vector_histogram)
 
 # Calculate KL div between scaled weights (per row) with scaled target distribution
-def calculate_scaled_kl_div(input_matrix, seed=seed,
+def calculate_scaled_kl_div(input_matrix, seed=1234,
                             shift_type= 'min', scale_type='minmax',
                             target_distribution='norm', axis=1):
 
@@ -180,7 +179,7 @@ def calculate_scaled_kl_div(input_matrix, seed=seed,
     return kl_values
     
 # Calculate KS distance (D or p-)value between scaled weights (per row) with scaled target distribution
-def calculate_ks_distance(input_matrix, seed=seed, shift_type='min', scale_type='minmax',
+def calculate_ks_distance(input_matrix, seed=1234, shift_type='min', scale_type='minmax',
                           target_distribution='norm', ks_metric='D', axis=1):
     
     if target_distribution == 'norm':
@@ -368,7 +367,7 @@ def tune_weights(off_indices, current_weights, layer):
     return tf.convert_to_tensor(current_weights['w'+str(layer)], dtype=tf.float32)
 
 # reads data
-def read_dataset(dataset_name='mnist', one_hot_encoding=True):
+def read_dataset(dataset_name='mnist', one_hot_encoding=True, seed=1234):
     minmax_scaling = False
     if(dataset_name == 'mnist'):
         mnist = read_data_sets('../data/MNIST_data/', one_hot=one_hot_encoding)
@@ -442,13 +441,13 @@ def get_correlated_features(X_tr, Y_tr, X_ts, N):
 # sets seed of helper function
 def set_seed(seed=1234):
     tf.set_random_seed(seed)
-    np.random.seed(seed=seed)
     random.seed(seed)
+    np.random.seed(seed=seed)
     print("Seeds in helper functions set to {}".format(seed))
     
 # epochs start at 1, index in data at 0
 # Method and code structure from mnist.next_batch
-def get_next_even_batch(X_tr, Y_tr, start, batch_size, epoch, seed=seed, shuffle=True):
+def get_next_even_batch(X_tr, Y_tr, start, batch_size, epoch, seed=1234, shuffle=True):
     end = start + batch_size
             
     if end > X_tr.shape[0]:
@@ -478,7 +477,7 @@ def get_next_even_batch(X_tr, Y_tr, start, batch_size, epoch, seed=seed, shuffle
     return batch_x, batch_y, next_start
 
 # batch_index starts at 0
-def get_next_batch(X_tr, Y_tr, batch_index, batch_size, seed=seed, shuffle=True):
+def get_next_batch(X_tr, Y_tr, batch_index, batch_size, seed=1234, shuffle=True):
     start = batch_index * batch_size
     end = start + batch_size - 1
     
@@ -510,7 +509,7 @@ def get_arrdict(layer_sizes, arr_init, prefix):
 # layers size and var_init define the architecture and initialization configuration of weights and biases in the network
 # variable type is either weights (2D) or biases (1D) and prefix determines name of resulting variables
 # Example output: For prefix 'w', w1 corresponds for weights between input and first hidden layers, etc.
-def get_vardict(layer_sizes, var_init, var_type, prefix):
+def get_vardict(layer_sizes, var_init, var_type, prefix, seed=1234):
     dict = {}
     
     n_layers = len(layer_sizes)
@@ -525,7 +524,7 @@ def get_vardict(layer_sizes, var_init, var_type, prefix):
             var_shape = [n_origin, n_dest]
 
         if(var_init == 'norm'):
-            dict[var_name] = tf.Variable(tf.random_normal(var_shape))
+            dict[var_name] = tf.Variable(tf.random_normal(var_shape, seed=seed))
         elif(var_init == 'zeros'):
             dict[var_name] = tf.Variable(tf.zeros(var_shape, dtype=tf.float32))
 
@@ -566,7 +565,7 @@ def get_best_result(t, hp_space, metric='accuracy'):
 
 
 # to write weight, bias dict of matrices into a text file 
-def save_vardict_to_file(filebasename_prefix, vardict, epoch, seed, dict_name="weight", pickling=False, sep="\t"):
+def save_vardict_to_file(filebasename_prefix, vardict, epoch, seed=1234, dict_name="weight", pickling=False, sep="\t"):
     now = datetime.datetime.now()
     
     if dict_name == "bias":
@@ -615,3 +614,28 @@ def save_vardict_to_file(filebasename_prefix, vardict, epoch, seed, dict_name="w
     output_file.write(all_weights_str)
     output_file.close()
     output_file.close()
+    
+# returns a sorted list (decreasing order) of features per the given selection function
+def sort_features(weights, scoring_func='sum'): # start here
+
+    w1 = weights['w1'] # rows correspond to source neurons, columns to destination ones
+    
+    if('abs' in scoring_func):
+       w1 = np.abs(w1)
+        
+    if('sum' in scoring_func):
+        feature_scores = np.sum(w1, axis=1)
+    elif('avg' in scoring_func):
+        feature_scores = np.mean(w1, axis=1)
+    elif('median' in scoring_func):
+        feature_scores = np.median(w1, axis=1)
+    elif('min' in scoring_func):
+        feature_scores = np.min(w1, axis=1)
+    elif('std' in scoring_func):
+        feature_scores = np.std(w1, axis=1)
+    elif('max' in scoring_func):
+        feature_scores = np.max(w1, axis=1)
+        
+    sorted_features = np.argsort(feature_scores)[::-1]
+    
+    return sorted_features
