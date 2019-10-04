@@ -226,11 +226,11 @@ with tf.Session() as sess:
         
     weights_dict = sess.run(weights)
     
-    #sorted_input_features = sort_features(weights_dict, scoring_func='abs_avg')
-    #print(sorted_input_features)
+    sorted_input_features = sort_features(weights_dict, scoring_func='skew')
+    print(sorted_input_features)
     
-    #sorted_input_features = sort_features(weights_dict, scoring_func='avg')
-    #print(sorted_input_features)
+    sorted_input_features = sort_features(weights_dict, scoring_func='kurt-skew', weight1=0.001)
+    print(sorted_input_features)
     
     #sorted_input_features = sort_features(weights_dict, scoring_func='abs_sum')
     #print(sorted_input_features)

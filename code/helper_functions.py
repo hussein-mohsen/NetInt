@@ -26,6 +26,7 @@ from helper_objects import DataSet
 from tensorflow.python.framework import dtypes
 
 from hyperopt import space_eval
+from setuptools.dist import Feature
 
 epsilon = 0.00001
 
@@ -614,28 +615,68 @@ def save_vardict_to_file(filebasename_prefix, vardict, epoch, seed=1234, dict_na
     output_file.write(all_weights_str)
     output_file.close()
     output_file.close()
+
+def calculate_indiv_function_values(matrix, scoring_func, axis=1):
+    if('abs_' in scoring_func):
+       matrix = np.abs(matrix)
     
+    increasing_flag = False
+    if('sum' in scoring_func):
+        feature_scores = np.sum(matrix, axis=1)
+    elif('avg' in scoring_func):
+        feature_scores = np.mean(matrix, axis=1)
+    elif('median' in scoring_func):
+        feature_scores = np.median(matrix, axis=1)
+    elif('min' in scoring_func):
+        feature_scores = np.min(matrix, axis=1)
+    elif('std' in scoring_func):
+        feature_scores = np.std(matrix, axis=1)
+        increasing_flag = True
+    elif('max' in scoring_func):
+        feature_scores = np.max(matrix, axis=1)
+    elif('skew' in scoring_func):
+        feature_scores = stats.skew(matrix, axis=1)
+        increasing_flag = True
+    elif('kurt' in scoring_func):
+        feature_scores = stats.kurtosis(matrix, axis=1)
+    else:
+        raise Exception('Invalid scoring function: ' +str(scoring_func))
+
+    return feature_scores, increasing_flag
+
+# weighted mixture of two functions separated by a hyphen: e.g. skew-kurt
+# individual scores are minmax-scaled to balance their contribution to composite scores
+def weighted_mixture(matrix, scoring_func='skew-kurt', axis=1, weight1=0.5, scaling=True):
+    weight2 = 1 - weight1
+
+    scoring_funcs = scoring_func.split('-')
+
+    feature_scores1, increasing_flag1 = calculate_indiv_function_values(matrix, scoring_func=scoring_funcs[0], axis=axis)
+    feature_scores1 = (-feature_scores1) if increasing_flag1 else feature_scores1
+        
+    feature_scores2, increasing_flag2 = calculate_indiv_function_values(matrix, scoring_func=scoring_funcs[1], axis=axis)
+    feature_scores2 = (-feature_scores2) if increasing_flag2 else feature_scores2
+
+    if scaling:
+        feature_scores1 = minmax_scale(feature_scores1)
+        feature_scores2 = minmax_scale(feature_scores2)
+        
+    weighted_feature_scores = (weight1 * feature_scores1) + (weight2 * feature_scores2)
+
+    return weighted_feature_scores, False
+
 # returns a sorted list (decreasing order) of features per the given selection function
-def sort_features(weights, scoring_func='sum'): # start here
+def sort_features(weights, scoring_func='sum', weight1=0.5, axis=1, scaling=True): # start here
 
     w1 = weights['w1'] # rows correspond to source neurons, columns to destination ones
     
-    if('abs' in scoring_func):
-       w1 = np.abs(w1)
-        
-    if('sum' in scoring_func):
-        feature_scores = np.sum(w1, axis=1)
-    elif('avg' in scoring_func):
-        feature_scores = np.mean(w1, axis=1)
-    elif('median' in scoring_func):
-        feature_scores = np.median(w1, axis=1)
-    elif('min' in scoring_func):
-        feature_scores = np.min(w1, axis=1)
-    elif('std' in scoring_func):
-        feature_scores = np.std(w1, axis=1)
-    elif('max' in scoring_func):
-        feature_scores = np.max(w1, axis=1)
-        
+    if('-' in scoring_func):
+        feature_scores, increasing_flag = weighted_mixture(w1, scoring_func=scoring_func, axis=axis, weight1=weight1, scaling=True)
+    else:
+        feature_scores, increasing_flag = calculate_indiv_function_values(w1, scoring_func=scoring_func, axis=axis)
+
     sorted_features = np.argsort(feature_scores)[::-1]
-    
+    if increasing_flag: # features where lower values dictate higher rank (e.g. std and skewness)
+        sorted_features = sorted_features[::-1]
+
     return sorted_features
