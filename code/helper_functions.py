@@ -667,7 +667,6 @@ def weighted_mixture(matrix, scoring_func='skew-kurt', axis=1, weight1=0.5, scal
 
 # returns a sorted list (decreasing order) of features per the given selection function
 def sort_features(weights, scoring_func='sum', weight1=0.5, axis=1, scaling=True): # start here
-
     w1 = weights['w1'] # rows correspond to source neurons, columns to destination ones
     
     if('-' in scoring_func):
@@ -675,8 +674,7 @@ def sort_features(weights, scoring_func='sum', weight1=0.5, axis=1, scaling=True
     else:
         feature_scores, increasing_flag = calculate_indiv_function_values(w1, scoring_func=scoring_func, axis=axis)
 
+    feature_scores = (-feature_scores) if increasing_flag else feature_scores # if increasing order is desired, swap signs to flip order so that decreasing order sorting below is returned as desired
     sorted_features = np.argsort(feature_scores)[::-1]
-    if increasing_flag: # features where lower values dictate higher rank (e.g. std and skewness)
-        sorted_features = sorted_features[::-1]
 
     return sorted_features
