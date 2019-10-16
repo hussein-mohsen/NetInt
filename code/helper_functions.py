@@ -368,8 +368,7 @@ def tune_weights(off_indices, current_weights, layer):
     return tf.convert_to_tensor(current_weights['w'+str(layer)], dtype=tf.float32)
 
 # reads data
-def read_dataset(dataset_name='mnist', one_hot_encoding=True, seed=1234):
-    minmax_scaling = False
+def read_dataset(dataset_name='mnist', one_hot_encoding=True, seed=1234, minmax_scaling=False):
     if(dataset_name == 'mnist'):
         mnist = read_data_sets('../data/MNIST_data/', one_hot=one_hot_encoding)
         
@@ -400,7 +399,7 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, seed=1234):
 
         X = diabetes_data[:, 0:-1]
         Y = diabetes_data[:, -1].astype(int) 
-        
+
         X_tr, X_ts, Y_tr, Y_ts = train_test_split(X, Y, test_size=0.2, random_state=seed)
         X_tr, X_val, Y_tr, Y_val = train_test_split(X_tr, Y_tr, test_size=0.25, random_state=seed)
         
