@@ -3,6 +3,7 @@ import argparse
 import os
 import time
 import random
+import uuid
 
 import json
 
@@ -10,24 +11,30 @@ import numpy as np
 from numpy import dtype, shape
 
 import tensorflow as tf
-from helper_functions import get_layer_inds, get_off_inds, pad_matrix, tune_weights, create_weight_graph, read_dataset, set_seed, get_layer, get_vardict, get_arrdict, multilayer_perceptron, ks_test, sort_features
+import helper_functions as hf 
+import feature_evaluation as eval
+
 from sklearn.metrics import accuracy_score, precision_score, roc_auc_score
+import pickle
+from pyexpat import features
+
+from scipy.spatial import distance
 
 #from tensorflow.examples.tutorials.mnist import input_data
-#mnist = input_data.read_data_sets("MNIST_data/", one_hot=True)
+#mnist = input_data.hf.read_data_sets("MNIST_data/", one_hot=True)
 
 # Hyperparameters
 learning_rate = 0.001
 training_epochs = 300
 batch_size = 100
 
-dataset_name = 'mnist'
+dataset_name = 'mnist' #mnist'
 input_json_dir = 'nnet_archs/'
 input_json = 'mnist_net.json'
 
 # Set random seed for replication
 seed=1234
-set_seed(seed=seed)
+hf.set_seed(seed=seed)
 display_step = 1
 
 # Tuning parameters
@@ -40,8 +47,12 @@ k_selected = 1 # number of neurons selected to be tuned ('turned off') each roun
 n_tuned_layers = 1 # number of layers to be tuned; a value of 2 means layers 2 and 3 (1st & 2nd hidden layers will be tuned)
 percentiles=False
 
+output_dir = "results/"
+uid = str(uuid.uuid4())[0:8] # unique id
+print('UID: ' +str(uid))
+
 # Parse input arguments
-# sample command with tuning: python tune_weights.py --tune 1
+# sample command with tuning: python hf.tune_weights.py --tune 1
 parser = argparse.ArgumentParser(description="Argument Parser")
 parser.add_argument("--ts", type=int, help="Tuning step size")
 parser.add_argument("--tt", help="Tuning type")
@@ -65,7 +76,7 @@ if args.tt:
     
 if args.sd:
     seed = args.sd
-    set_seed(seed=seed) # set same seed in helper
+    hf.set_seed(seed=seed) # set same seed in helper
     print("Randomization seed set to {}".format(seed))
 if args.nt:
     n_tuned_layers = args.nt
@@ -104,10 +115,10 @@ with open(input_json_dir+input_json) as json_file:
     batch_size = json_data['training_params']['batch_size']
     
     print('Layer sizes: {0} \n Layer types: {1} \n Activation functions: {2} \n Epochs: {3} \n Learning rate: {4} \n Batch size: {5}'.format(layer_sizes, layer_types, activ_funcs, training_epochs, learning_rate, batch_size))
-    
+
 # Complement available indices above. Updated at each neuron tuning step.
-off_indices = get_arrdict(layer_sizes, 'empty', 'o')
-avail_indices = get_arrdict(layer_sizes, 'range', 'a')
+off_indices = hf.get_arrdict(layer_sizes, 'empty', 'o')
+avail_indices = hf.get_arrdict(layer_sizes, 'range', 'a')
 
 # Input data placeholder
 X = tf.placeholder("float", [None, n_input])
@@ -117,16 +128,16 @@ Y = tf.placeholder("float", [None, n_classes])
 weight_init = 'norm'
 bias_init = 'norm'
 
-weights = get_vardict(layer_sizes, weight_init, 'weight', 'w', seed=seed)
-tuned_weights = get_vardict(layer_sizes, 'zeros', 'weight', 'w', seed=seed)
-biases = get_vardict(layer_sizes, bias_init, 'bias', 'b', seed=seed)
+weights = hf.get_vardict(layer_sizes, weight_init, 'weight', 'w', seed=seed)
+tuned_weights = hf.get_vardict(layer_sizes, 'zeros', 'weight', 'w', seed=seed)
+biases = hf.get_vardict(layer_sizes, bias_init, 'bias', 'b', seed=seed)
 
 # Neuron tuning tf operation
 neuron_tuning_op2 = tf.assign(weights['w2'], tuned_weights['w2'])
 neuron_tuning_op3 = tf.assign(weights['w3'], tuned_weights['w3'])
 
 # Construct the model
-logits = multilayer_perceptron(X, weights, biases, activ_funcs, layer_types)
+logits = hf.multilayer_perceptron(X, weights, biases, activ_funcs, layer_types)
 
 # Define loss function and optimizer
 loss_op = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=Y))
@@ -136,9 +147,10 @@ train_op = optimizer.minimize(loss_op)
 # Initialize the variables
 init = tf.global_variables_initializer()
 
-D = read_dataset(dataset_name, seed=seed)
+D = hf.read_dataset(dataset_name, seed=seed)
 X_tr, Y_tr = D.train.points, D.train.labels
 X_ts, Y_ts = D.test.points, D.test.labels
+
 
 with tf.Session() as sess:
     sess.run(init)
@@ -173,7 +185,7 @@ with tf.Session() as sess:
 
                 current_off_indices = off_indices['o'+str(l)]
                 #print(current_off_indices)
-                new_off_inds = get_off_inds(weights_dict, avail_inds=avail_indices['a'+str(l)], off_inds=current_off_indices, 
+                new_off_inds = hf.get_off_inds(weights_dict, avail_inds=avail_indices['a'+str(l)], off_inds=current_off_indices, 
                                             layer_index=l, k_selected=k_selected, tuning_type=tuning_type, shift_type=shift_type, 
                                             scale_type=scale_type, target_distribution=target_distribution, percentiles=percentiles)
 
@@ -182,7 +194,7 @@ with tf.Session() as sess:
                 off_indices['o'+str(l)] = np.append(off_indices['o'+str(l)], new_off_inds)
 
                 # get a tensor with off_inds neurons turned off
-                tuned_weights['w'+str(l)] = tune_weights(off_indices['o'+str(l)], weights_dict, l)
+                tuned_weights['w'+str(l)] = hf.tune_weights(off_indices['o'+str(l)], weights_dict, l)
                 print("Weight tuning done.")
 
             # run neuron tuning operation
@@ -223,17 +235,18 @@ with tf.Session() as sess:
         
         auc = roc_auc_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
         print("AUC ROC:", auc)
-        
+
     weights_dict = sess.run(weights)
-    
-    sorted_input_features = sort_features(weights_dict, scoring_func='skew')
-    print(sorted_input_features)
-    
-    sorted_input_features = sort_features(weights_dict, scoring_func='kurt-skew', weight1=0.001)
-    print(sorted_input_features)
-    
-    #sorted_input_features = sort_features(weights_dict, scoring_func='abs_sum')
-    #print(sorted_input_features)
-    
-    #sorted_input_features = sort_features(weights_dict, scoring_func='std')
-    #print(sorted_input_features)
+    weights_filename = output_dir+str(uid)+'_weights.pkl'
+    pickle.dump(weights_dict, open(weights_filename, 'wb'))
+    print("Pickled weights in " +weights_filename)
+
+    bias_dict = sess.run(biases)
+    biases_file = open(output_dir+str(uid)+'_biases.pkl', 'wb')
+    pickle.dump(bias_dict, biases_file)
+    print("Pickled bias values.")
+
+# Feature evaluation
+weights_dict = pickle.load(open(weights_filename, 'rb'))
+scoring_functions = ['min', 'max', 'avg', 'median', 'skew', 'kurt', 'std', 'abs_min', 'abs_max', 'abs_avg', 'abs_median', 'abs_skew', 'abs_kurt', 'abs_std']
+eval.evaluate_features(dataset_name=dataset_name, weights_dict=weights_dict, scoring_functions=scoring_functions, output_dir='results/', uid=uid, top_k=5, input_data=X_ts, visualize_imgs=False, n_imgs=20)

@@ -3,7 +3,7 @@ import datetime
 import pickle
 
 import numpy as np
-#from numpy import dtype, shape
+from numpy import dtype, shape
 
 import tensorflow as tf
 import networkx as nx
@@ -21,12 +21,17 @@ from tensorflow.contrib.learn.python.learn.datasets.mnist import read_data_sets
 from tensorflow.contrib.learn.python.learn.datasets.base import Datasets
 
 from scipy import stats
+from scipy.spatial import distance
 
 from helper_objects import DataSet
 from tensorflow.python.framework import dtypes
 
 from hyperopt import space_eval
 from setuptools.dist import Feature
+
+import matplotlib.pyplot as plt
+import os
+from prompt_toolkit import output
 
 epsilon = 0.00001
 
@@ -75,7 +80,7 @@ def get_layer(x, w, b, activ_fun, layer_type='ff'):
 # calculates KL divergence of two distributions
 def kl_div(empirical, target_dist):
     if(abs(empirical.sum()-1) > 0.05 or abs(target_dist.sum()-1) > 0.05):
-        print("Warning: one or more distributions do not sum up to 1.")
+        print('Warning: one or more distributions do not sum up to 1.')
 
     kl_div_value = (empirical * np.log((empirical + epsilon)/(target_dist + epsilon))).sum()
     return kl_div_value
@@ -267,7 +272,7 @@ def get_off_inds(weights_dict, avail_inds, off_inds, layer_index, input_list=[],
                  percentiles=False):
     if(len(avail_inds) == 0):
         select_inds = [-1]
-        print("Warning: no more neurons to tune.")
+        print('Warning: no more neurons to tune.')
     else:
         if tuning_type == 'random': # random selection of indices
             select_inds = random.sample(range(len(avail_inds)), k_selected) # indices within avail_inds to be turned off        
@@ -278,7 +283,7 @@ def get_off_inds(weights_dict, avail_inds, off_inds, layer_index, input_list=[],
                 weight_G = nx.from_numpy_matrix(weight_graph) # create graph object
                 
                 # calculate centrality measure values
-                print("Calculating centrality measures...")
+                print('Calculating centrality measures...')
                 values = np.array(list(nx.betweenness_centrality(weight_G, k=7, weight='weight').values()))
                 
                 # select the nodes corresponding to the layer since the graph = its nodes + those of preceding 
@@ -287,7 +292,7 @@ def get_off_inds(weights_dict, avail_inds, off_inds, layer_index, input_list=[],
                 values = values[layer_start:layer_end]
             elif tuning_type == 'kl_div' or tuning_type == 'ks_test':
                 # calculate KL divergence from a target distribution (default: Gaussian)
-                print("Calculating distribution distance values per {0}...".format(tuning_type))
+                print('Calculating distribution distance values per {0}...'.format(tuning_type))
                 values = calculate_layer_distance_values(weights_dict, layer_index, tuning_type=tuning_type,
                                                          shift_type=shift_type, scale_type=scale_type, 
                                                          target_distribution=target_distribution,
@@ -359,11 +364,11 @@ def create_weight_graph(weights_dict, layer):
 # returns a tf tensor
 def tune_weights(off_indices, current_weights, layer):
     current_weights['w'+str(layer)][off_indices, :] = 0 # turn off connections outcoming from off_indices neurons in the layer
-    print("Outcoming connections at layer {} tuned.".format(layer))
+    print('Outcoming connections at layer {} tuned.'.format(layer))
      
     if(layer > 1):
         current_weights['w'+str(layer-1)][:, off_indices] = 0 # turn off connections incoming to off_indices neurons in the layer
-        print("Incoming connections at layer {} tuned.".format(layer))
+        print('Incoming connections at layer {} tuned.'.format(layer))
         
     return tf.convert_to_tensor(current_weights['w'+str(layer)], dtype=tf.float32)
 
@@ -393,7 +398,6 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, seed=1234):
         if one_hot_encoding == False:
             Y_tr = np.argmax(Y_tr, axis=1)
             Y_ts = np.argmax(Y_ts, axis=1)
-            
     elif(dataset_name == 'diabetes'):
         diabetes_filename = '../data/csv_data/diabetes_data_processed.csv'
         diabetes_data =  np.genfromtxt(diabetes_filename, delimiter=',', skip_header=1) # diabetes shape: (101767, 36)
@@ -419,7 +423,7 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, seed=1234):
         X_tr = scaler.fit_transform(X_tr)
         X_val = scaler.fit_transform(X_val)
         X_ts = scaler.transform(X_ts)
-        print("Minmax scaling done.")
+        print('Minmax scaling done.')
     
     train = DataSet(X_tr, Y_tr)
     validation = DataSet(X_val, Y_val)
@@ -444,7 +448,7 @@ def set_seed(seed=1234):
     tf.set_random_seed(seed)
     random.seed(seed)
     np.random.seed(seed=seed)
-    print("Seeds in helper functions set to {}".format(seed))
+    print('Seeds in helper functions set to {}'.format(seed))
     
 # epochs start at 1, index in data at 0
 # Method and code structure from mnist.next_batch
@@ -566,115 +570,52 @@ def get_best_result(t, hp_space, metric='accuracy'):
 
 
 # to write weight, bias dict of matrices into a text file 
-def save_vardict_to_file(filebasename_prefix, vardict, epoch, seed=1234, dict_name="weight", pickling=False, sep="\t"):
+def save_vardict_to_file(filebasename_prefix, vardict, epoch, seed=1234, dict_name='weight', pickling=False, sep='\t'):
     now = datetime.datetime.now()
     
-    if dict_name == "bias":
-        suffix = "es"
-    elif dict_name == "weight":
-        suffix = "s"
+    if dict_name == 'bias':
+        suffix = 'es'
+    elif dict_name == 'weight':
+        suffix = 's'
     else:
         raise Exception('Invalid dict_name.')
     
-    filebasename = filebasename_prefix + "_ep" + str(epoch) + "_sd" + str(seed) + "_" + dict_name + suffix + "_" + str(now.isoformat())
-    all_weights_str = ""
+    filebasename = filebasename_prefix + '_ep' + str(epoch) + '_sd' + str(seed) + '_' + dict_name + suffix + '_' + str(now.isoformat())
+    all_weights_str = ''
 
     # check for pickling
     if pickling:
-        pickle_file = open(filebasename + ".pkl", "wb")
+        
+        pickle_file = open(filebasename + '.pkl', 'wb')
         pickle.dump(vardict, pickle_file)
 
     keys_ordered = sorted(vardict.keys(), reverse=True)
     for key in keys_ordered:
-        layer_weights_str = ""
+        layer_weights_str = ''
         weights = vardict[key]
 
-        if(dict_name == "bias"):
-            layer_weights_str = ""
+        if(dict_name == 'bias'):
+            layer_weights_str = ''
             for ind in range(weights.shape[0]):
                 layer_weights_str = layer_weights_str + str(weights[ind])
                 
                 if ind != (weights.shape[0]-1):
                     layer_weights_str = layer_weights_str + sep
                 else:
-                    layer_weights_str = layer_weights_str + "\n"
-        elif(dict_name == "weight"):
+                    layer_weights_str = layer_weights_str + '\n'
+        elif(dict_name == 'weight'):
             for row in range(weights.shape[0]):
-                row_str = ""
+                row_str = ''
                 for col in range(weights.shape[1]):
                     row_str = row_str + str(weights[row, col])
                 
                     if col != (weights.shape[1]-1):
                         row_str = row_str + sep
     
-                layer_weights_str = layer_weights_str + row_str + "\n"
+                layer_weights_str = layer_weights_str + row_str + '\n'
         
         all_weights_str = all_weights_str + layer_weights_str
     
-    output_file = open(filebasename + ".txt", "w+")
+    output_file = open(filebasename + '.txt', 'w+')
     output_file.write(all_weights_str)
     output_file.close()
-    output_file.close()
-
-def calculate_indiv_function_values(matrix, scoring_func, axis=1):
-    if('abs_' in scoring_func):
-       matrix = np.abs(matrix)
-    
-    increasing_flag = False
-    if('sum' in scoring_func):
-        feature_scores = np.sum(matrix, axis=1)
-    elif('avg' in scoring_func):
-        feature_scores = np.mean(matrix, axis=1)
-    elif('median' in scoring_func):
-        feature_scores = np.median(matrix, axis=1)
-    elif('min' in scoring_func):
-        feature_scores = np.min(matrix, axis=1)
-    elif('std' in scoring_func):
-        feature_scores = np.std(matrix, axis=1)
-        increasing_flag = True
-    elif('max' in scoring_func):
-        feature_scores = np.max(matrix, axis=1)
-    elif('skew' in scoring_func):
-        feature_scores = stats.skew(matrix, axis=1)
-        increasing_flag = True
-    elif('kurt' in scoring_func):
-        feature_scores = stats.kurtosis(matrix, axis=1)
-    else:
-        raise Exception('Invalid scoring function: ' +str(scoring_func))
-
-    return feature_scores, increasing_flag
-
-# weighted mixture of two functions separated by a hyphen: e.g. skew-kurt
-# individual scores are minmax-scaled to balance their contribution to composite scores
-def weighted_mixture(matrix, scoring_func='skew-kurt', axis=1, weight1=0.5, scaling=True):
-    weight2 = 1 - weight1
-
-    scoring_funcs = scoring_func.split('-')
-
-    feature_scores1, increasing_flag1 = calculate_indiv_function_values(matrix, scoring_func=scoring_funcs[0], axis=axis)
-    feature_scores1 = (-feature_scores1) if increasing_flag1 else feature_scores1
-        
-    feature_scores2, increasing_flag2 = calculate_indiv_function_values(matrix, scoring_func=scoring_funcs[1], axis=axis)
-    feature_scores2 = (-feature_scores2) if increasing_flag2 else feature_scores2
-
-    if scaling:
-        feature_scores1 = minmax_scale(feature_scores1)
-        feature_scores2 = minmax_scale(feature_scores2)
-        
-    weighted_feature_scores = (weight1 * feature_scores1) + (weight2 * feature_scores2)
-
-    return weighted_feature_scores, False
-
-# returns a sorted list (decreasing order) of features per the given selection function
-def sort_features(weights, scoring_func='sum', weight1=0.5, axis=1, scaling=True): # start here
-    w1 = weights['w1'] # rows correspond to source neurons, columns to destination ones
-    
-    if('-' in scoring_func):
-        feature_scores, increasing_flag = weighted_mixture(w1, scoring_func=scoring_func, axis=axis, weight1=weight1, scaling=True)
-    else:
-        feature_scores, increasing_flag = calculate_indiv_function_values(w1, scoring_func=scoring_func, axis=axis)
-
-    feature_scores = (-feature_scores) if increasing_flag else feature_scores # if increasing order is desired, swap signs to flip order so that decreasing order sorting below is returned as desired
-    sorted_features = np.argsort(feature_scores)[::-1]
-
-    return sorted_features
