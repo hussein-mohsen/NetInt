@@ -15,7 +15,7 @@ from sklearn.model_selection import train_test_split
 from numpy.random.mtrand import shuffle
 
 from scipy.io import loadmat
-from scipy.stats import pearsonr
+from scipy.stats import powerlaw, norm, pearsonr
 
 from tensorflow.contrib.learn.python.learn.datasets.mnist import read_data_sets
 from tensorflow.contrib.learn.python.learn.datasets.base import Datasets
@@ -29,7 +29,6 @@ from tensorflow.python.framework import dtypes
 from hyperopt import space_eval
 from setuptools.dist import Feature
 
-import matplotlib.pyplot as plt
 import os
 from prompt_toolkit import output
 
@@ -38,27 +37,23 @@ epsilon = 0.00001
 # Create the MLP
 # x is the input tensor, activ_funs is a list of activation functions
 # weights and biases are dictionaries with keys = 'w1'/'b1', 'w2'/'b2', etc.
+# returns a list of layers [input layer, hidden layer 1, hidden layer 2, ..., output layer]
 def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
-    layers = []
-    
-    for l in range(len(activ_funcs)):
-        if(l == 0):
-            input_tensor = x
-        else:
-            input_tensor = layers[l-1]
-            
-        weights_key = 'w' + str(l+1)
-        biases_key = 'b' + str(l+1)
-        activation_function = activ_funcs[l]
-        layer_type = layer_types[l]
+    layers = [x]
 
-        if(l == len(activ_funcs)-1):
+    for l in range(1, len(activ_funcs)+1):
+        input_tensor = layers[l-1]
+            
+        weights_key = 'w' + str(l)
+        biases_key = 'b' + str(l)
+        activation_function = activ_funcs[l-1]
+        layer_type = layer_types[l-1]
+
+        if(l == len(activ_funcs)):
             activation_function = 'linear'
             
         layer = get_layer(input_tensor, weights[weights_key], biases[biases_key], activation_function, layer_type)
         layers.append(layer)
-
-    print(layers)
     return layers[-1] # return the last tensor, i.e. output layer
 
 # creates TF layers
@@ -317,7 +312,7 @@ def pad_matrix(input_matrix):
     return input_matrix
 
 # creates a weight graph at an input layer
-# Layer indexing starts at 1; numpy indexing starts at 0
+# Layer indexing starts at 1 (input layer = 1, 1st hidden layer = 2, and so forth)
 def create_weight_graph(weights_dict, layer):
     if layer == 1: # input layer: edge case where weight graph is made of one layer
         return pad_matrix(weights_dict['w'+str(layer)])
@@ -366,22 +361,25 @@ def tune_weights(off_indices, current_weights, layer):
     current_weights['w'+str(layer)][off_indices, :] = 0 # turn off connections outcoming from off_indices neurons in the layer
     print('Outcoming connections at layer {} tuned.'.format(layer))
      
-    if(layer > 1):
+    if(layer > 1): # hiddne layers
         current_weights['w'+str(layer-1)][:, off_indices] = 0 # turn off connections incoming to off_indices neurons in the layer
         print('Incoming connections at layer {} tuned.'.format(layer))
         
     return tf.convert_to_tensor(current_weights['w'+str(layer)], dtype=tf.float32)
 
 # reads data
-def read_dataset(dataset_name='mnist', one_hot_encoding=True, seed=1234):
+def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, seed=1234):
+    # parameters used on dataset-specific basis
     minmax_scaling = False
-    if(dataset_name == 'mnist'):
+    noise_type = 'zeros' # binomial noise is default
+
+    if dataset_name == 'mnist':
         mnist = read_data_sets('../data/MNIST_data/', one_hot=one_hot_encoding)
-        
+
         X_tr, Y_tr = mnist.train.images, mnist.train.labels
         X_val, Y_val = mnist.validation.images, mnist.validation.labels
         X_ts, Y_ts = mnist.test.images, mnist.test.labels
-    elif(dataset_name == 'psychencode'):
+    elif dataset_name == 'psychencode':
         psychencode_filename = '../data/psychencode/DSPN_bpd_large/datasets/bpd_data1.mat'
         psychencode_data = loadmat(psychencode_filename)
         
@@ -391,15 +389,20 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, seed=1234):
     
         select_correlated_cols = True
         N = 932
-        
+
         if(select_correlated_cols):
             X_tr, X_ts = get_correlated_features(X_tr, Y_tr, X_ts, N)
 
         if one_hot_encoding == False:
             Y_tr = np.argmax(Y_tr, axis=1)
             Y_ts = np.argmax(Y_ts, axis=1)
-    elif(dataset_name == 'diabetes'):
-        diabetes_filename = '../data/csv_data/diabetes_data_processed.csv'
+    elif 'diabetes' in dataset_name:
+        if dataset_name == 'diabetes':
+            diabetes_filename = '../data/csv_data/diabetes_data_processed.csv'
+        if dataset_name == 'diabetes_SMOTE':
+            diabetes_filename = '../data/csv_data/diabetes_data_smote_manoj_etal_processed.csv'
+
+        print(diabetes_filename)
         diabetes_data =  np.genfromtxt(diabetes_filename, delimiter=',', skip_header=1) # diabetes shape: (101767, 36)
 
         X = diabetes_data[:, 0:-1] # select all data columns
@@ -407,17 +410,33 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, seed=1234):
 
         X_tr, X_ts, Y_tr, Y_ts = train_test_split(X, Y, test_size=0.2, random_state=seed)
         X_tr, X_val, Y_tr, Y_val = train_test_split(X_tr, Y_tr, test_size=0.25, random_state=seed)
-        
-        n_values = len(np.unique(Y_tr))
+
         Y_ts = np.maximum(Y_ts, 0, Y_ts) # max w/ 0 to fix artifact in data where some y vales < 0
         
         minmax_scaling = True
+        noise_type = 'norm' # Gaussian noise
+    elif dataset_name in ('xor', 'moons'):
+        N = 4000 # number of data points
+        D = 8 # number of noisy features
         
-        if one_hot_encoding:
-            Y_tr = np.eye(n_values)[Y_tr]
-            Y_val = np.eye(n_values)[Y_val]
-            Y_ts = np.eye(n_values)[Y_ts] 
-    
+        if dataset_name == 'moons':
+            from sklearn.datasets import make_moons
+            X_signal, Y = make_moons(n_samples=N, noise=0.1)
+            X = np.random.normal(0.0, scale=1.0, size=(N, D+2)) # D cols of gaussian noise; first 2 cols to include signal
+            noise_type = 'norm'
+        elif dataset_name == 'xor':
+            bern_sample1 = np.random.choice(2, N, p=[0.5, 0.5]) # "fair" bernouilli samples
+            bern_sample2 = np.random.choice(2, N, p=[0.5, 0.5])
+            Y = np.logical_xor(bern_sample1, bern_sample2).astype(int)
+
+            X_signal = np.concatenate((bern_sample1, bern_sample2)).reshape(2, N).T
+            X = np.random.choice(2, (N, D+2), p=[0.5, 0.5]) # D cols of bernoulli "fair" noise; first 2 cols to include signal
+        
+        X[:, 0:2] = X_signal
+        
+        X_tr, X_ts, Y_tr, Y_ts = train_test_split(X, Y, test_size=0.2, random_state=seed)
+        X_tr, X_val, Y_tr, Y_val = train_test_split(X_tr, Y_tr, test_size=0.25, random_state=seed) # Final split: 60-20-20%
+
     if minmax_scaling:
         scaler = MinMaxScaler()
         X_tr = scaler.fit_transform(X_tr)
@@ -425,6 +444,20 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, seed=1234):
         X_ts = scaler.transform(X_ts)
         print('Minmax scaling done.')
     
+    if one_hot_encoding and dataset_name != 'mnist': # mnist labels are already one-hot encoded
+            n_values = len(np.unique(Y_tr))
+            Y_tr = np.eye(n_values)[Y_tr]
+            Y_val = np.eye(n_values)[Y_val]
+            Y_ts = np.eye(n_values)[Y_ts] 
+
+    if noise_ratio > 0.0:
+        if noise_type == 'zeros': # zeros noise
+            X_tr[np.random.sample(size=X_tr.shape) < noise_ratio] = 0
+        elif noise_type == 'norm': # Gaussian noise
+            X_tr += np.random.normal(0, noise_ratio/2, X_tr.shape) # sd=noise_ratio/2 to cover ranges of values after minmax scaling appropriately
+        
+        print("Noise at ration {0} added.".format(noise_ratio))
+        
     train = DataSet(X_tr, Y_tr)
     validation = DataSet(X_val, Y_val)
     test = DataSet(X_ts, Y_ts)
@@ -514,7 +547,7 @@ def get_arrdict(layer_sizes, arr_init, prefix):
 # layers size and var_init define the architecture and initialization configuration of weights and biases in the network
 # variable type is either weights (2D) or biases (1D) and prefix determines name of resulting variables
 # Example output: For prefix 'w', w1 corresponds for weights between input and first hidden layers, etc.
-def get_vardict(layer_sizes, var_init, var_type, prefix, seed=1234):
+def get_vardict(layer_sizes, var_init, var_type, prefix, weight_init_reduction='fan_in', seed=1234):
     dict = {}
     
     n_layers = len(layer_sizes)
@@ -529,7 +562,11 @@ def get_vardict(layer_sizes, var_init, var_type, prefix, seed=1234):
             var_shape = [n_origin, n_dest]
 
         if(var_init == 'norm'):
-            dict[var_name] = tf.Variable(tf.random_normal(var_shape, seed=seed))
+            std_dev = 1.0
+            if weight_init_reduction == 'fan_in': # normalize std deviation by fan_in neurons to scale down outputs to be centered around ~1
+                std_dev = 0.0212
+                
+            dict[var_name] = tf.Variable(tf.random_normal(var_shape, stddev=std_dev, seed=seed))
         elif(var_init == 'zeros'):
             dict[var_name] = tf.Variable(tf.zeros(var_shape, dtype=tf.float32))
 
@@ -564,10 +601,9 @@ def get_best_result(t, hp_space, metric='accuracy'):
         except:
             print('Error with a hyperparameter space occurred.')
             continue
-    
+
     best_trial_result.update(space_eval(hp_space, best_trial_hyperparam_space)) # merge dictionaries
     return best_trial_result # returns merged dictionaries (results+hyperparameter space)
-
 
 # to write weight, bias dict of matrices into a text file 
 def save_vardict_to_file(filebasename_prefix, vardict, epoch, seed=1234, dict_name='weight', pickling=False, sep='\t'):

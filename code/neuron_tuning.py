@@ -16,7 +16,6 @@ import feature_evaluation as eval
 
 from sklearn.metrics import accuracy_score, precision_score, roc_auc_score
 import pickle
-from pyexpat import features
 
 from scipy.spatial import distance
 
@@ -25,7 +24,7 @@ from scipy.spatial import distance
 
 # Hyperparameters
 learning_rate = 0.001
-training_epochs = 300
+training_epochs = 10
 batch_size = 100
 
 dataset_name = 'mnist' #mnist'
@@ -36,6 +35,7 @@ input_json = 'mnist_net.json'
 seed=1234
 hf.set_seed(seed=seed)
 display_step = 1
+evaluate_features_flag = False
 
 # Tuning parameters
 tuning_type = 'centrality' # tuning type:Centrality-based (default) or KL Divergence
@@ -43,9 +43,10 @@ scale_type = 'minmax'
 shift_type = 'min' # type of shifting the target distribution to positive values in KL div-based tuning
 target_distribution = 'norm' # target distribution in KL div-based tuning
 tuning_step = 1 # number of step(s) at which centrality-based tuning periodically takes place
-k_selected = 1 # number of neurons selected to be tuned ('turned off') each round
+k_selected = 2 # number of neurons selected to be tuned ('turned off') each round
 n_tuned_layers = 1 # number of layers to be tuned; a value of 2 means layers 2 and 3 (1st & 2nd hidden layers will be tuned)
 percentiles=False
+noise_ratio = 0.0
 
 output_dir = "results/"
 uid = str(uuid.uuid4())[0:8] # unique id
@@ -54,7 +55,7 @@ print('UID: ' +str(uid))
 # Parse input arguments
 # sample command with tuning: python hf.tune_weights.py --tune 1
 parser = argparse.ArgumentParser(description="Argument Parser")
-parser.add_argument("--ts", type=int, help="Tuning step size")
+parser.add_argument("--ts", type=float, help="Tuning step size")
 parser.add_argument("--tt", help="Tuning type")
 parser.add_argument("--sd", type=int, help="Randomization seed")
 parser.add_argument("--nt", type=int, help="Number of tuned layers")
@@ -62,6 +63,7 @@ parser.add_argument("--ds", help="Dataset name")
 parser.add_argument("--ij", help="Input network JSON file")
 parser.add_argument("--st", help="Distribution shift type") # shift type of the weight distribution to positive
 parser.add_argument("--td", help="Target distirubion for KL-divergence based comparisons.") # shift type of the weight distribution to positive
+parser.add_argument("--nr", type=float, help="Noise ratio (added to data)")
 
 args = parser.parse_args()
 
@@ -99,7 +101,11 @@ if args.st:
 if args.td:
     target_distribution = args.td
     print("Target distribution set to {}".format(target_distribution))
-        
+
+if args.nr:
+    noise_ratio = args.nr
+    print("Noise ratio set to {}".format(noise_ratio))
+         
 with open(input_json_dir+input_json) as json_file:    
     json_data = json.load(json_file)
 
@@ -114,6 +120,15 @@ with open(input_json_dir+input_json) as json_file:
     learning_rate = json_data['training_params']['learning_rate']
     batch_size = json_data['training_params']['batch_size']
     
+    eval_type = json_data['evaluation']['eval_type']
+    top_k = json_data['evaluation']['top_k']
+    bottom_features = json_data['evaluation']['bottom_features']
+    visualize_imgs = json_data['evaluation']['visualize_imgs']
+    n_imgs = json_data['evaluation']['n_imgs']
+    sorted_ref_features = json_data['evaluation']['sorted_ref_features']
+    discarded_features = json_data['evaluation']['discarded_features']
+
+    print("Evaluation type: {0}\nTop k: {1}\nBottom Features Flag: {2}\nVisualize Images: {3}\nN_imgs: {4}\nSorted_ref_features: {5}\nDiscarded_features: {6}".format(eval_type, top_k, bottom_features, visualize_imgs, n_imgs, sorted_ref_features, discarded_features))
     print('Layer sizes: {0} \n Layer types: {1} \n Activation functions: {2} \n Epochs: {3} \n Learning rate: {4} \n Batch size: {5}'.format(layer_sizes, layer_types, activ_funcs, training_epochs, learning_rate, batch_size))
 
 # Complement available indices above. Updated at each neuron tuning step.
@@ -126,15 +141,17 @@ Y = tf.placeholder("float", [None, n_classes])
     
 # Store layers weight & bias
 weight_init = 'norm'
+weight_init_reduction='fan_in'
 bias_init = 'norm'
 
 weights = hf.get_vardict(layer_sizes, weight_init, 'weight', 'w', seed=seed)
-tuned_weights = hf.get_vardict(layer_sizes, 'zeros', 'weight', 'w', seed=seed)
+tuned_weights = hf.get_vardict(layer_sizes, 'zeros', 'weight', 'w',  weight_init_reduction= weight_init_reduction, seed=seed)
 biases = hf.get_vardict(layer_sizes, bias_init, 'bias', 'b', seed=seed)
 
 # Neuron tuning tf operation
-neuron_tuning_op2 = tf.assign(weights['w2'], tuned_weights['w2'])
-neuron_tuning_op3 = tf.assign(weights['w3'], tuned_weights['w3'])
+neuron_tuning_op_w1 = tf.assign(weights['w1'], tuned_weights['w1'])
+neuron_tuning_op_w2 = tf.assign(weights['w2'], tuned_weights['w2'])
+neuron_tuning_op_w3 = tf.assign(weights['w3'], tuned_weights['w3'])
 
 # Construct the model
 logits = hf.multilayer_perceptron(X, weights, biases, activ_funcs, layer_types)
@@ -147,10 +164,9 @@ train_op = optimizer.minimize(loss_op)
 # Initialize the variables
 init = tf.global_variables_initializer()
 
-D = hf.read_dataset(dataset_name, seed=seed)
+D = hf.read_dataset(dataset_name, noise_ratio=noise_ratio, seed=seed)
 X_tr, Y_tr = D.train.points, D.train.labels
 X_ts, Y_ts = D.test.points, D.test.labels
-
 
 with tf.Session() as sess:
     sess.run(init)
@@ -167,9 +183,9 @@ with tf.Session() as sess:
         avg_cost = 0.0
         
         start = time.time()
-        
+            
         # centrality-based neuron tuning step
-        if(epoch % tuning_step == 0 and (args.ts or args.tt)):
+        if(int(epoch % tuning_step) == 0 and (args.ts or args.tt)):
             weights_dict = sess.run(weights)
 
             # choose layers on which tuning is executed
@@ -180,7 +196,7 @@ with tf.Session() as sess:
                 tuning_layer_end = len(weights_dict)+1
                 print("Tuning layer end is out of bounds. Set to {}".format(tuning_layer_end))
                 
-            for l in range(2, tuning_layer_end):
+            for l in range(2, tuning_layer_end):                
                 print("Tuning on layer {}".format(l))        
 
                 current_off_indices = off_indices['o'+str(l)]
@@ -197,12 +213,11 @@ with tf.Session() as sess:
                 tuned_weights['w'+str(l)] = hf.tune_weights(off_indices['o'+str(l)], weights_dict, l)
                 print("Weight tuning done.")
 
-            # run neuron tuning operation
-            if(n_tuned_layers == 1):
-                sess.run(neuron_tuning_op2)
-            elif(n_tuned_layers == 2):
-                sess.run([neuron_tuning_op2, neuron_tuning_op3])
-                
+            # run neuron tuning operation(s)
+            sess.run([neuron_tuning_op_w1, neuron_tuning_op_w2]) # first and second matrices surrounding first layer
+            if(n_tuned_layers == 2): # if second layer needs to be tuned
+                sess.run(neuron_tuning_op_w3)
+
          # Loop over all batches
         for i in range(total_batch):
             batch_x, batch_y = D.train.next_batch(batch_size)
@@ -224,7 +239,7 @@ with tf.Session() as sess:
 
     pred = tf.nn.softmax(logits)  # Apply softmax to logits
 
-    # Test model    
+    # Test model
     ts_predictions = sess.run(pred, feed_dict={X: X_ts, Y: Y_ts})
     accuracy = accuracy_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
     print("Accuracy:", accuracy)
@@ -236,17 +251,24 @@ with tf.Session() as sess:
         auc = roc_auc_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
         print("AUC ROC:", auc)
 
-    weights_dict = sess.run(weights)
-    weights_filename = output_dir+str(uid)+'_weights.pkl'
-    pickle.dump(weights_dict, open(weights_filename, 'wb'))
-    print("Pickled weights in " +weights_filename)
-
-    bias_dict = sess.run(biases)
-    biases_file = open(output_dir+str(uid)+'_biases.pkl', 'wb')
-    pickle.dump(bias_dict, biases_file)
-    print("Pickled bias values.")
+    if evaluate_features_flag:
+        weights_dict = sess.run(weights)
+        weights_filename = output_dir+str(uid)+'_weights.pkl'
+        pickle.dump(weights_dict, open(weights_filename, 'wb'))
+        print("Pickled weights in " +weights_filename)
+    
+        bias_dict = sess.run(biases)
+        biases_file = open(output_dir+str(uid)+'_biases.pkl', 'wb')
+        pickle.dump(bias_dict, biases_file)
+        print("Pickled bias values.")
 
 # Feature evaluation
-weights_dict = pickle.load(open(weights_filename, 'rb'))
-scoring_functions = ['min', 'max', 'avg', 'median', 'skew', 'kurt', 'std', 'abs_min', 'abs_max', 'abs_avg', 'abs_median', 'abs_skew', 'abs_kurt', 'abs_std']
-eval.evaluate_features(dataset_name=dataset_name, weights_dict=weights_dict, scoring_functions=scoring_functions, output_dir='results/', uid=uid, top_k=5, input_data=X_ts, visualize_imgs=False, n_imgs=20)
+if evaluate_features_flag:
+    weights_dict = pickle.load(open(weights_filename, 'rb'))
+    
+    tuning_measure = ''
+    if 'kl_div' in tuning_type or 'ks_test' in tuning_type:
+        tuning_measure = (tuning_type +":"+ target_distribution)
+    
+    scoring_functions = [tuning_measure, 'min', 'max', 'avg', 'median', 'skew', 'kurt', 'std', 'abs_'+tuning_measure, 'abs_min', 'abs_max', 'abs_avg', 'abs_median', 'abs_skew', 'abs_kurt', 'abs_std']
+    eval.evaluate_features(dataset_name=dataset_name, weights_dict=weights_dict, scoring_functions=scoring_functions, eval_type=eval_type, sorted_ref_features=sorted_ref_features, discarded_features=discarded_features, output_dir='results/', uid=uid, top_k=top_k, input_data=X_ts, bottom_features=bottom_features, visualize_imgs=visualize_imgs, n_imgs=n_imgs)
