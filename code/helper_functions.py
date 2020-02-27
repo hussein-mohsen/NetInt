@@ -31,6 +31,7 @@ from setuptools.dist import Feature
 
 import os
 from prompt_toolkit import output
+from _operator import length_hint
 
 epsilon = 0.00001
 
@@ -243,19 +244,6 @@ def calculate_layer_distance_values(weights_dict, layer_index,
             
     return distance_values
 
-# helper function to get indices of layer at index in a graph
-def get_layer_inds(boundaries, index):
-    if(index < 1 or index > len(boundaries)):
-        raise Exception('Index is out of bounds.')
-    elif(index == 1): # input layer
-        start = 0
-    else: # hidden layers
-        start = boundaries[index-2]
-    
-    end = boundaries[index-1] -1
-    
-    return start, end
-
 # gets indices to be tuned (i.e. turned off and replaced by 0 values)
 # available indices are the ones not tuned prior to selection   
 # tuning_type: 'centrality' (default: betweenness centrality) 
@@ -272,6 +260,7 @@ def get_off_inds(weights_dict, avail_inds, off_inds, layer_index, input_list=[],
         if tuning_type == 'random': # random selection of indices
             select_inds = random.sample(range(len(avail_inds)), k_selected) # indices within avail_inds to be turned off        
         else:
+            increasing_flag = True # for centraliy, higher neuron value is better; for distribution-based measures, lower is better.
             if tuning_type == 'centrality': # sorted centrality-based selection
                 weight_graph, layer_boundaries = create_weight_graph(weights_dict, layer_index)
                 weight_graph = weight_graph.astype(dt)
@@ -287,6 +276,7 @@ def get_off_inds(weights_dict, avail_inds, off_inds, layer_index, input_list=[],
                 values = values[layer_start:layer_end]
             elif tuning_type == 'kl_div' or tuning_type == 'ks_test':
                 # calculate KL divergence from a target distribution (default: Gaussian)
+                increasing_flag = False
                 print('Calculating distribution distance values per {0}...'.format(tuning_type))
                 values = calculate_layer_distance_values(weights_dict, layer_index, tuning_type=tuning_type,
                                                          shift_type=shift_type, scale_type=scale_type, 
@@ -297,6 +287,9 @@ def get_off_inds(weights_dict, avail_inds, off_inds, layer_index, input_list=[],
     
             # select nodes with lowest k_selected to tune
             inds = np.argsort(values)
+            if increasing_flag == False:
+                inds = inds[::-1]
+                
             inds = inds[~np.in1d(inds, off_inds)] # remove current off_inds
             select_inds = inds[0:k_selected]
 

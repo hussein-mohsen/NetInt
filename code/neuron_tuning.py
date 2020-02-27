@@ -18,6 +18,7 @@ from sklearn.metrics import accuracy_score, precision_score, roc_auc_score
 import pickle
 
 from scipy.spatial import distance
+from _operator import length_hint
 
 #from tensorflow.examples.tutorials.mnist import input_data
 #mnist = input_data.hf.read_data_sets("MNIST_data/", one_hot=True)
@@ -158,7 +159,7 @@ logits = hf.multilayer_perceptron(X, weights, biases, activ_funcs, layer_types)
 
 # Define loss function and optimizer
 loss_op = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=Y))
-optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
+optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
 train_op = optimizer.minimize(loss_op)
 
 # Initialize the variables
@@ -186,8 +187,6 @@ with tf.Session() as sess:
             
         # centrality-based neuron tuning step
         if(int(epoch % tuning_step) == 0 and (args.ts or args.tt)):
-            weights_dict = sess.run(weights)
-
             # choose layers on which tuning is executed
             tuning_layer_start = 2
             tuning_layer_end = tuning_layer_start+n_tuned_layers
@@ -195,7 +194,8 @@ with tf.Session() as sess:
             if tuning_layer_end > len(weights_dict)+1:
                 tuning_layer_end = len(weights_dict)+1
                 print("Tuning layer end is out of bounds. Set to {}".format(tuning_layer_end))
-                
+            
+            weights_dict = sess.run(weights)    
             for l in range(2, tuning_layer_end):                
                 print("Tuning on layer {}".format(l))        
 
