@@ -40,7 +40,7 @@ epsilon = 0.00001
 # weights and biases are dictionaries with keys = 'w1'/'b1', 'w2'/'b2', etc.
 # returns a list of layers [input layer, hidden layer 1, hidden layer 2, ..., output layer]
 def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
-    layers = [x]
+    layers = [x] # layer indexing: layers[0] > layer 1 (input), layers[1] > layer 2 (1st hidden layer), layers[-1] > output layer
 
     for l in range(1, len(activ_funcs)+1):
         input_tensor = layers[l-1]
@@ -48,7 +48,7 @@ def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
         weights_key = 'w' + str(l)
         biases_key = 'b' + str(l)
         activation_function = activ_funcs[l-1]
-        layer_type = layer_types[l-1]
+        layer_type = layer_types[l]
 
         if(l == len(activ_funcs)):
             activation_function = 'linear'
@@ -234,7 +234,7 @@ def calculate_layer_distance_values(weights_dict, layer_index,
                                                     percentiles=percentiles, axis=1)
 
     
-        if layer_index > 1:
+        if layer_index > 1: # beyond input layer
             incoming_weights = weights_dict['w'+str(layer_index-1)]
             incoming_distance_values = calculate_distance_values(incoming_weights, tuning_type=tuning_type, shift_type=shift_type,
                                                                  scale_type=scale_type, target_distribution=target_distribution, 
@@ -349,16 +349,45 @@ def create_weight_graph(weights_dict, layer):
     return weight_graph, [layer_start, layer_end]
 
 # helper function that turns off neurons at off_indices (0 value assignment)
-# returns a tf tensor
-def tune_weights(off_indices, current_weights, layer):
-    current_weights['w'+str(layer)][off_indices, :] = 0 # turn off connections outcoming from off_indices neurons in the layer
-    print('Outcoming connections at layer {} tuned.'.format(layer))
-     
-    if(layer > 1): # hiddne layers
-        current_weights['w'+str(layer-1)][:, off_indices] = 0 # turn off connections incoming to off_indices neurons in the layer
-        print('Incoming connections at layer {} tuned.'.format(layer))
-        
-    return tf.convert_to_tensor(current_weights['w'+str(layer)], dtype=tf.float32)
+# weights is a dictionary of tf.Variables; tuned layers are [tuned_layers_start, tuned_layers_end] 
+# tuned weight matrices are wj s.t. j = [max(1, tuning_layer_start-1), tuned_layers_end] 
+# e.g. by default, for layers 2 and 3, tuning layer start and end are 2 and 3, to-be-tuned matrices are w1, 2, and 3
+# tuning directions = 'outgoing' (tunes off outgoing weights only) or 'outgoing_ingoing' (both directions)
+def tune_weights(off_indices, weights, tuning_layer_start, tuning_layer_end, sess, tuning_direction='outgoing_ingoing'):
+    tuning_weight_start = max(1, tuning_layer_start-1)
+    tuning_weight_end = tuning_layer_end
+
+    # every weight matrix w_wi is affected by source and destination neuron, whose off_indices are at o_wi and o_wi+1
+    # e.g. weights in w2 are tuned off based on off indices in source and destination neurons in layers 2 and 3 (o2, o3)
+    for wi in range(tuning_weight_start, tuning_weight_end+1):
+        tune_off_outgoing_weights(off_indices, weights, wi, sess)
+        if 'ingoing' in tuning_direction:
+            tune_off_ingoing_weights(off_indices, weights, wi, sess)
+
+# helper function that tunes off outgoing weights; entire rows in in weight matrix wi
+# wi is the index of the weight matrix; weights is a dictionary of tf.Variables
+def tune_off_outgoing_weights(off_indices, weights, wi, sess):
+    if 'o'+str(wi) in off_indices and off_indices['o'+str(wi)].size > 0:
+        off_indices_list = np.reshape(off_indices['o'+str(wi)], (off_indices['o'+str(wi)].size, 1)) # tf accepts np list of lists
+        zeros_replacement_tensor = tf.zeros((off_indices['o'+str(wi)].size, weights['w'+str(wi)].shape[1]), tf.float32)
+        updated = tf.scatter_nd_update(weights['w'+str(wi)], off_indices_list, zeros_replacement_tensor) # update tensor
+        sess.run(tf.assign(weights['w'+str(wi)], updated))
+        print('Outgoing weights from source layer in w{} tuned.'.format(wi))
+
+# helper function that tunes off ingoing weights; entire columns in weight matrix wi
+# wi is the index of the weight matrix; weights is a dictionary of tf.Variables
+def tune_off_ingoing_weights(off_indices, weights, wi, sess):
+    if 'o'+str(wi+1) in off_indices and off_indices['o'+str(wi+1)].size > 0:
+        # Columns updated differently due to limitations in current TensorFlow
+        off_indices_list = tf.constant(off_indices['o'+str(wi+1)], dtype=tf.int32)
+        index_range = tf.range(weights['w'+str(wi)].shape[0], dtype=tf.int32) # all indices in source layer, used to generate pairs with target indices in destination
+        mesh_grid = tf.meshgrid(index_range, off_indices_list, indexing='ij')
+        target_index_pairs = tf.stack(mesh_grid, axis=2)
+        target_index_pairs = tf.reshape(target_index_pairs, (target_index_pairs.shape[0]*target_index_pairs.shape[1], target_index_pairs.shape[2])) # reshaping them because I'm close to OCD
+        zeros_replacement_tensor =  tf.zeros(target_index_pairs.shape[0], tf.float32)
+        updated = tf.scatter_nd_update(weights['w'+str(wi)], target_index_pairs, zeros_replacement_tensor)
+        sess.run(tf.assign(weights['w'+str(wi)], updated))
+        print('Ingoing weights into destination layer in w{} tuned.'.format(wi))
 
 # reads data
 def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, seed=1234):

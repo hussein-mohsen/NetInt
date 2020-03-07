@@ -25,7 +25,7 @@ from _operator import length_hint
 
 # Hyperparameters
 learning_rate = 0.001
-training_epochs = 10
+training_epochs = 100
 batch_size = 100
 
 dataset_name = 'mnist' #mnist'
@@ -114,8 +114,8 @@ with open(input_json_dir+input_json) as json_file:
     n_input = layer_sizes[0]
     n_classes = layer_sizes[-1]
     
-    layer_types = json_data['layers']['types'] # In, h1, h2, ..., Out
-    activ_funcs = json_data['layers']['activ_funcs'] # h1, h2, ..., Out
+    layer_types = json_data['layers']['types'] # layer_types indexing: layer_types[0] > layer 1 (input layer), layer_types[1] > layer 2 (1st hidden layer), layer_types[-1] > output layer
+    activ_funcs = json_data['layers']['activ_funcs'] # activation function indexing: activ_funcs[0] > layer 2, activ_funcs[1] > layer 3, etc.
 
     training_epochs = json_data['training_params']['epochs']
     learning_rate = json_data['training_params']['learning_rate']
@@ -148,11 +148,6 @@ bias_init = 'norm'
 weights = hf.get_vardict(layer_sizes, weight_init, 'weight', 'w', seed=seed)
 tuned_weights = hf.get_vardict(layer_sizes, 'zeros', 'weight', 'w',  weight_init_reduction= weight_init_reduction, seed=seed)
 biases = hf.get_vardict(layer_sizes, bias_init, 'bias', 'b', seed=seed)
-
-# Neuron tuning tf operation
-neuron_tuning_op_w1 = tf.assign(weights['w1'], tuned_weights['w1'])
-neuron_tuning_op_w2 = tf.assign(weights['w2'], tuned_weights['w2'])
-neuron_tuning_op_w3 = tf.assign(weights['w3'], tuned_weights['w3'])
 
 # Construct the model
 logits = hf.multilayer_perceptron(X, weights, biases, activ_funcs, layer_types)
@@ -189,14 +184,15 @@ with tf.Session() as sess:
         if(int(epoch % tuning_step) == 0 and (args.ts or args.tt)):
             # choose layers on which tuning is executed
             tuning_layer_start = 2
-            tuning_layer_end = tuning_layer_start+n_tuned_layers
+            tuning_layer_end = tuning_layer_start+n_tuned_layers-1
             
+            weights_dict = sess.run(weights)  
             if tuning_layer_end > len(weights_dict)+1:
                 tuning_layer_end = len(weights_dict)+1
                 print("Tuning layer end is out of bounds. Set to {}".format(tuning_layer_end))
-            
-            weights_dict = sess.run(weights)    
-            for l in range(2, tuning_layer_end):                
+
+            print('Tuning layer start: {0}, {1}'.format(tuning_layer_start, tuning_layer_end))
+            for l in range(tuning_layer_start, tuning_layer_end+1):                
                 print("Tuning on layer {}".format(l))        
 
                 current_off_indices = off_indices['o'+str(l)]
@@ -208,23 +204,22 @@ with tf.Session() as sess:
                 # update available and off_indices (i.e. indices of tuned neurons)
                 avail_indices['a'+str(l)] = np.delete(avail_indices['a'+str(l)], np.searchsorted(avail_indices['a'+str(l)], new_off_inds))
                 off_indices['o'+str(l)] = np.append(off_indices['o'+str(l)], new_off_inds)
+                print(off_indices['o'+str(l)])
 
-                # get a tensor with off_inds neurons turned off
-                tuned_weights['w'+str(l)] = hf.tune_weights(off_indices['o'+str(l)], weights_dict, l)
-                print("Weight tuning done.")
-
-            # run neuron tuning operation(s)
-            sess.run([neuron_tuning_op_w1, neuron_tuning_op_w2]) # first and second matrices surrounding first layer
-            if(n_tuned_layers == 2): # if second layer needs to be tuned
-                sess.run(neuron_tuning_op_w3)
+            # get a tensor with off_inds neurons turned off
+            hf.tune_weights(off_indices, weights, tuning_layer_start, tuning_layer_end, sess=sess)
+            print("Weight tuning done.")
 
          # Loop over all batches
         for i in range(total_batch):
             batch_x, batch_y = D.train.next_batch(batch_size)
 
+            if epoch >= tuning_step:
+                hf.tune_weights(off_indices, weights, tuning_layer_start, tuning_layer_end, sess=sess, tuning_direction='outgoing')
+
             _, c = sess.run([train_op, loss_op], feed_dict={X: batch_x,
                                                             Y: batch_y})
-
+           
             # Compute average loss
             avg_cost += c / total_batch
             
