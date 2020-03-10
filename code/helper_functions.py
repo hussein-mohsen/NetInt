@@ -353,7 +353,7 @@ def create_weight_graph(weights_dict, layer):
 # tuned weight matrices are wj s.t. j = [max(1, tuning_layer_start-1), tuned_layers_end] 
 # e.g. by default, for layers 2 and 3, tuning layer start and end are 2 and 3, to-be-tuned matrices are w1, 2, and 3
 # tuning directions = 'outgoing' (tunes off outgoing weights only) or 'outgoing_ingoing' (both directions)
-def tune_weights(off_indices, weights, tuning_layer_start, tuning_layer_end, sess, tuning_direction='outgoing_ingoing'):
+def tune_weights(off_indices, weights, biases, tuning_layer_start, tuning_layer_end, sess, tuning_direction='outgoing_ingoing'):
     tuning_weight_start = max(1, tuning_layer_start-1)
     tuning_weight_end = tuning_layer_end
 
@@ -362,7 +362,7 @@ def tune_weights(off_indices, weights, tuning_layer_start, tuning_layer_end, ses
     for wi in range(tuning_weight_start, tuning_weight_end+1):
         tune_off_outgoing_weights(off_indices, weights, wi, sess)
         if 'ingoing' in tuning_direction:
-            tune_off_ingoing_weights(off_indices, weights, wi, sess)
+            tune_off_ingoing_weights(off_indices, weights, biases, wi, sess)
 
 # helper function that tunes off outgoing weights; entire rows in in weight matrix wi
 # wi is the index of the weight matrix; weights is a dictionary of tf.Variables
@@ -375,19 +375,37 @@ def tune_off_outgoing_weights(off_indices, weights, wi, sess):
         print('Outgoing weights from source layer in w{} tuned.'.format(wi))
 
 # helper function that tunes off ingoing weights; entire columns in weight matrix wi
-# wi is the index of the weight matrix; weights is a dictionary of tf.Variables
-def tune_off_ingoing_weights(off_indices, weights, wi, sess):
+# wi is the index of the ingoing weight matrix and bias vector; weights and biases are tf.Variable dictionaries
+# indices of biases are same as incoming weight matrices: e.g. 'b1' with 'w1' working with neurons of layer 2 (1st hidden layer)
+def tune_off_ingoing_weights(off_indices, weights, biases, wi, sess):
     if 'o'+str(wi+1) in off_indices and off_indices['o'+str(wi+1)].size > 0:
         # Columns updated differently due to limitations in current TensorFlow
         off_indices_list = tf.constant(off_indices['o'+str(wi+1)], dtype=tf.int32)
+        
+        # weight tuning
         index_range = tf.range(weights['w'+str(wi)].shape[0], dtype=tf.int32) # all indices in source layer, used to generate pairs with target indices in destination
         mesh_grid = tf.meshgrid(index_range, off_indices_list, indexing='ij')
         target_index_pairs = tf.stack(mesh_grid, axis=2)
         target_index_pairs = tf.reshape(target_index_pairs, (target_index_pairs.shape[0]*target_index_pairs.shape[1], target_index_pairs.shape[2])) # reshaping them because I'm close to OCD
         zeros_replacement_tensor =  tf.zeros(target_index_pairs.shape[0], tf.float32)
-        updated = tf.scatter_nd_update(weights['w'+str(wi)], target_index_pairs, zeros_replacement_tensor)
-        sess.run(tf.assign(weights['w'+str(wi)], updated))
-        print('Ingoing weights into destination layer in w{} tuned.'.format(wi))
+        updated_weights = tf.scatter_nd_update(weights['w'+str(wi)], target_index_pairs, zeros_replacement_tensor)
+        
+        # bias tuning
+        updated_biases = tf.scatter_update(biases['b'+str(wi)], off_indices['o'+str(wi+1)], tf.zeros([off_indices['o'+str(wi+1)].size]))
+        
+        sess.run([tf.assign(weights['w'+str(wi)], updated_weights), tf.assign(biases['b'+str(wi)], updated_biases)])
+        print('Ingoing weights and biases into destination layer in w{0} and b{1} tuned.'.format(wi, wi))
+
+# a special function for sigmoid (and sigmoid-like functions), f, whose f(0) != 0
+# these layers' outgoing weights must be reset to 0 before each batch update to ensure tuning runs accurately
+# if layer wi is a sigmoid layer (i.e. activ_funcs[wi-2]='sigmoid' as activ_funcs' index starts at 0 to described layer 2), first hidden layer, outgoing off indices (i.e. rows) in weight matrix w_wi+1 are reset to 0
+def tune_weights_before_batch_optimization(off_indices, weights, activ_funcs, tuning_layer_start, tuning_layer_end, sess):
+    tuning_weight_start = max(1, tuning_layer_start-1)
+    tuning_weight_end = tuning_layer_end
+
+    for wi in range(tuning_weight_start, tuning_weight_end+1):
+        if wi >= 2 and activ_funcs[wi-2] not in ('relu', 'linear'):
+            tune_off_outgoing_weights(off_indices, weights, wi, sess)
 
 # reads data
 def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, seed=1234):

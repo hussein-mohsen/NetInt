@@ -142,7 +142,7 @@ Y = tf.placeholder("float", [None, n_classes])
     
 # Store layers weight & bias
 weight_init = 'norm'
-weight_init_reduction='fan_in'
+weight_init_reduction='regular'
 bias_init = 'norm'
 
 weights = hf.get_vardict(layer_sizes, weight_init, 'weight', 'w', seed=seed)
@@ -191,7 +191,7 @@ with tf.Session() as sess:
                 tuning_layer_end = len(weights_dict)+1
                 print("Tuning layer end is out of bounds. Set to {}".format(tuning_layer_end))
 
-            print('Tuning layer start: {0}, {1}'.format(tuning_layer_start, tuning_layer_end))
+            print('Tuning layer start, end: {0}, {1}'.format(tuning_layer_start, tuning_layer_end))
             for l in range(tuning_layer_start, tuning_layer_end+1):                
                 print("Tuning on layer {}".format(l))        
 
@@ -204,21 +204,23 @@ with tf.Session() as sess:
                 # update available and off_indices (i.e. indices of tuned neurons)
                 avail_indices['a'+str(l)] = np.delete(avail_indices['a'+str(l)], np.searchsorted(avail_indices['a'+str(l)], new_off_inds))
                 off_indices['o'+str(l)] = np.append(off_indices['o'+str(l)], new_off_inds)
-                print(off_indices['o'+str(l)])
 
             # get a tensor with off_inds neurons turned off
-            hf.tune_weights(off_indices, weights, tuning_layer_start, tuning_layer_end, sess=sess)
+            hf.tune_weights(off_indices, weights, biases, tuning_layer_start, tuning_layer_end, sess=sess)
             print("Weight tuning done.")
 
          # Loop over all batches
         for i in range(total_batch):
             batch_x, batch_y = D.train.next_batch(batch_size)
 
-            if epoch >= tuning_step:
-                hf.tune_weights(off_indices, weights, tuning_layer_start, tuning_layer_end, sess=sess, tuning_direction='outgoing')
+            if epoch >= tuning_step: # to ensure weights from functions f s.t. f(0) != 0 are tuned off and won't interfere in optimization
+                hf.tune_weights_before_batch_optimization(off_indices, weights, activ_funcs, tuning_layer_start, tuning_layer_end, sess=sess)
 
-            _, c = sess.run([train_op, loss_op], feed_dict={X: batch_x,
-                                                            Y: batch_y})
+                w, b = sess.run([weights, biases])
+                print(w['w1'][:, off_indices['o2']])
+                print(b['b1'])
+            
+            _, c = sess.run([train_op, loss_op], feed_dict={X: batch_x, Y: batch_y})
            
             # Compute average loss
             avg_cost += c / total_batch
@@ -229,7 +231,9 @@ with tf.Session() as sess:
         if epoch % display_step == 0:
             print("\nEpoch:", '%04d' % (epoch))
             print('Execution Time: {0} {1}, Cost: {2}'.format(1000*(end-start), 'ms', avg_cost))
-            
+    
+    # tuning off outgoing weights and biases after optimization to ensure all values are final before analysis
+    hf.tune_weights(off_indices, weights, biases, tuning_layer_start, tuning_layer_end, sess=sess, tuning_direction='outgoing')
     print("Optimization Done.")
 
     pred = tf.nn.softmax(logits)  # Apply softmax to logits
