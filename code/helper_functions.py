@@ -163,9 +163,9 @@ def calculate_scaled_kl_div(input_matrix, seed=1234,
     input_matrix = np.apply_along_axis(calculate_histogram_pmf, axis, input_matrix) # histograms
 
     if target_distribution == 'norm':
-        target_dist = np.random.normal(1, 0.1, (1, input_matrix.shape[axis]))
+        target_dist = np.random.normal(1, 0.3, (1, input_matrix.shape[axis]))
     elif 'powerlaw' in target_distribution: # power law and inverse power law distribution
-        target_dist = np.random.power(a=0.35, size=(input_matrix.shape[axis], ))
+        target_dist = np.random.power(a=1.5, size=(input_matrix.shape[axis], ))
     else:
         raise Exception('Invalid target distribution.')
     
@@ -221,21 +221,21 @@ def calculate_distance_values(weights, tuning_type='kl_div', shift_type='min', s
 
 # calculates KL divergence from a target distribution for incoming and outcoming weight distributions
 # KL calculated after min-max scaling to [0, 1] + eps; returns averaged incoming and outcoming scores for each neuron
-def calculate_layer_distance_values(weights_dict, layer_index, 
+def calculate_layer_distance_values(weights_npdict, layer_index, 
                                     shift_type='min', scale_type='minmax', 
                                     target_distribution='norm', tuning_type='kl_div', 
                                     ks_metric='D', percentiles=False):    
-    if layer_index > len(weights_dict): # output layer or erroneous index
+    if layer_index > len(weights_npdict): # output layer or erroneous index
         raise Exception('Layer index is out of bounds.')
     else:
-        outcoming_weights = weights_dict['w'+str(layer_index)]        
+        outcoming_weights = weights_npdict['w'+str(layer_index)]        
         distance_values = calculate_distance_values(outcoming_weights, tuning_type=tuning_type,shift_type=shift_type, 
                                                     scale_type=scale_type, target_distribution=target_distribution, 
                                                     percentiles=percentiles, axis=1)
 
     
         if layer_index > 1: # beyond input layer
-            incoming_weights = weights_dict['w'+str(layer_index-1)]
+            incoming_weights = weights_npdict['w'+str(layer_index-1)]
             incoming_distance_values = calculate_distance_values(incoming_weights, tuning_type=tuning_type, shift_type=shift_type,
                                                                  scale_type=scale_type, target_distribution=target_distribution, 
                                                                  percentiles=percentiles, axis=0)
@@ -249,7 +249,7 @@ def calculate_layer_distance_values(weights_dict, layer_index,
 # tuning_type: 'centrality' (default: betweenness centrality) 
 #              'kl_div' (default: with Gaussian)   
 #              'random': 
-def get_off_inds(weights_dict, avail_inds, off_inds, layer_index, input_list=[], 
+def get_off_inds(weights_npdict, avail_inds, off_inds, layer_index, input_list=[], 
                  k_selected=4, tuning_type='centrality', dt=[('weight', float)], 
                  shift_type='min', scale_type='minmax', target_distribution='norm',
                  percentiles=False):
@@ -260,9 +260,10 @@ def get_off_inds(weights_dict, avail_inds, off_inds, layer_index, input_list=[],
         if tuning_type == 'random': # random selection of indices
             select_inds = random.sample(range(len(avail_inds)), k_selected) # indices within avail_inds to be turned off        
         else:
-            increasing_flag = True # for centraliy, higher neuron value is better; for distribution-based measures, lower is better.
             if tuning_type == 'centrality': # sorted centrality-based selection
-                weight_graph, layer_boundaries = create_weight_graph(weights_dict, layer_index)
+                increasing_flag = True # for centrality, higher neuron value is better; for distribution-based distance measures, lower is better.
+                
+                weight_graph, layer_boundaries = create_weight_graph(weights_npdict, layer_index)
                 weight_graph = weight_graph.astype(dt)
                 weight_G = nx.from_numpy_matrix(weight_graph) # create graph object
                 
@@ -275,17 +276,18 @@ def get_off_inds(weights_dict, avail_inds, off_inds, layer_index, input_list=[],
                 layer_start = layer_boundaries[0]; layer_end = layer_boundaries[1]
                 values = values[layer_start:layer_end]
             elif tuning_type == 'kl_div' or tuning_type == 'ks_test':
-                # calculate KL divergence from a target distribution (default: Gaussian)
                 increasing_flag = False
+                
+                # calculate KL divergence from a target distribution (default: Gaussian)
                 print('Calculating distribution distance values per {0}...'.format(tuning_type))
-                values = calculate_layer_distance_values(weights_dict, layer_index, tuning_type=tuning_type,
+                values = calculate_layer_distance_values(weights_npdict, layer_index, tuning_type=tuning_type,
                                                          shift_type=shift_type, scale_type=scale_type, 
                                                          target_distribution=target_distribution,
                                                          percentiles=percentiles)
             else:
                 raise Exception('Invalid tuning type value.')
     
-            # select nodes with lowest k_selected to tune
+            # select k_selected nodes to tune
             inds = np.argsort(values)
             if increasing_flag == False:
                 inds = inds[::-1]
@@ -306,10 +308,10 @@ def pad_matrix(input_matrix):
 
 # creates a weight graph at an input layer
 # Layer indexing starts at 1 (input layer = 1, 1st hidden layer = 2, and so forth)
-def create_weight_graph(weights_dict, layer):
+def create_weight_graph(weights_npdict, layer):
     if layer == 1: # input layer: edge case where weight graph is made of one layer
-        return pad_matrix(weights_dict['w'+str(layer)])
-    elif layer > len(weights_dict): # output layer or erroneous index
+        return pad_matrix(weights_npdict['w'+str(layer)])
+    elif layer > len(weights_npdict): # output layer or erroneous index
         raise Exception('Layer index is out of bounds.')
     else: # hidden layer: preceding, current and next layer forming the graph 
         boundaries = []
@@ -317,10 +319,10 @@ def create_weight_graph(weights_dict, layer):
         
         # create boundaries matrix to help slicing the weight graph
         for l in range(layer-1, layer+1):
-                total_n += weights_dict['w'+str(l)].shape[0]
+                total_n += weights_npdict['w'+str(l)].shape[0]
                 boundaries.append(total_n)
         
-        total_n += weights_dict['w'+str(l)].shape[1]
+        total_n += weights_npdict['w'+str(l)].shape[1]
         boundaries.append(total_n)
             
         # create the graph of combined nodes implemented as an undirected graph
@@ -328,8 +330,8 @@ def create_weight_graph(weights_dict, layer):
         weight_graph = np.zeros((total_n, total_n))
         for l in range(layer-1, layer+2):
 
-            weight_matrix = weights_dict['w'+str(layer)]
-            pre_weight_matrix = weights_dict['w'+str(layer-1)]
+            weight_matrix = weights_npdict['w'+str(layer)]
+            pre_weight_matrix = weights_npdict['w'+str(layer-1)]
             
             layer_start = boundaries[0]
             layer_end = boundaries[1]

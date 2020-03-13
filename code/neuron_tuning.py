@@ -43,7 +43,9 @@ tuning_type = 'centrality' # tuning type:Centrality-based (default) or KL Diverg
 scale_type = 'minmax'
 shift_type = 'min' # type of shifting the target distribution to positive values in KL div-based tuning
 target_distribution = 'norm' # target distribution in KL div-based tuning
-tuning_step = 1 # number of step(s) at which centrality-based tuning periodically takes place
+tuning_step = 2 # number of step(s) at which centrality-based tuning periodically takes place
+tuning_layer_start = 2
+            
 k_selected = 2 # number of neurons selected to be tuned ('turned off') each round
 n_tuned_layers = 1 # number of layers to be tuned; a value of 2 means layers 2 and 3 (1st & 2nd hidden layers will be tuned)
 percentiles=False
@@ -107,6 +109,14 @@ if args.nr:
     noise_ratio = args.nr
     print("Noise ratio set to {}".format(noise_ratio))
          
+tuning_flag = False
+if args.ts or args.tt:
+    tuning_flag = True
+    print("Tuning flag turned on")
+
+tuning_layer_end = tuning_layer_start + n_tuned_layers - 1 # choose layers on which tuning is executed
+print('Tuning layer start, end: {0}, {1}'.format(tuning_layer_start, tuning_layer_end))
+    
 with open(input_json_dir+input_json) as json_file:    
     json_data = json.load(json_file)
 
@@ -131,7 +141,7 @@ with open(input_json_dir+input_json) as json_file:
 
     print("Evaluation type: {0}\nTop k: {1}\nBottom Features Flag: {2}\nVisualize Images: {3}\nN_imgs: {4}\nSorted_ref_features: {5}\nDiscarded_features: {6}".format(eval_type, top_k, bottom_features, visualize_imgs, n_imgs, sorted_ref_features, discarded_features))
     print('Layer sizes: {0} \n Layer types: {1} \n Activation functions: {2} \n Epochs: {3} \n Learning rate: {4} \n Batch size: {5}'.format(layer_sizes, layer_types, activ_funcs, training_epochs, learning_rate, batch_size))
-
+    
 # Complement available indices above. Updated at each neuron tuning step.
 off_indices = hf.get_arrdict(layer_sizes, 'empty', 'o')
 avail_indices = hf.get_arrdict(layer_sizes, 'range', 'a')
@@ -177,29 +187,18 @@ with tf.Session() as sess:
     # Training cycle
     for epoch in range(1, training_epochs+1):
         avg_cost = 0.0
-        
         start = time.time()
             
-        # centrality-based neuron tuning step
-        if(int(epoch % tuning_step) == 0 and (args.ts or args.tt)):
-            # choose layers on which tuning is executed
-            tuning_layer_start = 2
-            tuning_layer_end = tuning_layer_start+n_tuned_layers-1
-            
-            weights_dict = sess.run(weights)  
-            if tuning_layer_end > len(weights_dict)+1:
-                tuning_layer_end = len(weights_dict)+1
-                print("Tuning layer end is out of bounds. Set to {}".format(tuning_layer_end))
+        # tuning step
+        if(int(epoch % tuning_step) == 0 and tuning_flag):
+            weights_npdict = sess.run(weights)
 
-            print('Tuning layer start, end: {0}, {1}'.format(tuning_layer_start, tuning_layer_end))
             for l in range(tuning_layer_start, tuning_layer_end+1):                
-                print("Tuning on layer {}".format(l))        
-
-                current_off_indices = off_indices['o'+str(l)]
-                #print(current_off_indices)
-                new_off_inds = hf.get_off_inds(weights_dict, avail_inds=avail_indices['a'+str(l)], off_inds=current_off_indices, 
-                                            layer_index=l, k_selected=k_selected, tuning_type=tuning_type, shift_type=shift_type, 
-                                            scale_type=scale_type, target_distribution=target_distribution, percentiles=percentiles)
+                print("Tuning on layer {}".format(l))
+                current_off_indices = off_indices['o'+str(l)]        
+                new_off_inds = hf.get_off_inds(weights_npdict, avail_inds=avail_indices['a'+str(l)], off_inds=current_off_indices, 
+                                               layer_index=l, k_selected=k_selected, tuning_type=tuning_type, shift_type=shift_type, 
+                                               scale_type=scale_type, target_distribution=target_distribution, percentiles=percentiles)
 
                 # update available and off_indices (i.e. indices of tuned neurons)
                 avail_indices['a'+str(l)] = np.delete(avail_indices['a'+str(l)], np.searchsorted(avail_indices['a'+str(l)], new_off_inds))
@@ -213,13 +212,9 @@ with tf.Session() as sess:
         for i in range(total_batch):
             batch_x, batch_y = D.train.next_batch(batch_size)
 
-            if epoch >= tuning_step: # to ensure weights from functions f s.t. f(0) != 0 are tuned off and won't interfere in optimization
+            if epoch >= tuning_step and tuning_flag: # to ensure weights from functions f where f(0) != 0 are tuned off and don't interfere in optimization
                 hf.tune_weights_before_batch_optimization(off_indices, weights, activ_funcs, tuning_layer_start, tuning_layer_end, sess=sess)
 
-                w, b = sess.run([weights, biases])
-                print(w['w1'][:, off_indices['o2']])
-                print(b['b1'])
-            
             _, c = sess.run([train_op, loss_op], feed_dict={X: batch_x, Y: batch_y})
            
             # Compute average loss
@@ -232,8 +227,8 @@ with tf.Session() as sess:
             print("\nEpoch:", '%04d' % (epoch))
             print('Execution Time: {0} {1}, Cost: {2}'.format(1000*(end-start), 'ms', avg_cost))
     
-    # tuning off outgoing weights and biases after optimization to ensure all values are final before analysis
-    hf.tune_weights(off_indices, weights, biases, tuning_layer_start, tuning_layer_end, sess=sess, tuning_direction='outgoing')
+    if tuning_flag: # tuning off outgoing weights and biases one last time after optimization to ensure all values are final before analysis
+        hf.tune_weights(off_indices, weights, biases, tuning_layer_start, tuning_layer_end, sess=sess, tuning_direction='outgoing')
     print("Optimization Done.")
 
     pred = tf.nn.softmax(logits)  # Apply softmax to logits
@@ -251,9 +246,9 @@ with tf.Session() as sess:
         print("AUC ROC:", auc)
 
     if evaluate_features_flag:
-        weights_dict = sess.run(weights)
+        weights_npdict = sess.run(weights)
         weights_filename = output_dir+str(uid)+'_weights.pkl'
-        pickle.dump(weights_dict, open(weights_filename, 'wb'))
+        pickle.dump(weights_npdict, open(weights_filename, 'wb'))
         print("Pickled weights in " +weights_filename)
     
         bias_dict = sess.run(biases)
@@ -263,11 +258,11 @@ with tf.Session() as sess:
 
 # Feature evaluation
 if evaluate_features_flag:
-    weights_dict = pickle.load(open(weights_filename, 'rb'))
+    weights_npdict = pickle.load(open(weights_filename, 'rb'))
     
     tuning_measure = ''
     if 'kl_div' in tuning_type or 'ks_test' in tuning_type:
         tuning_measure = (tuning_type +":"+ target_distribution)
     
     scoring_functions = [tuning_measure, 'min', 'max', 'avg', 'median', 'skew', 'kurt', 'std', 'abs_'+tuning_measure, 'abs_min', 'abs_max', 'abs_avg', 'abs_median', 'abs_skew', 'abs_kurt', 'abs_std']
-    eval.evaluate_features(dataset_name=dataset_name, weights_dict=weights_dict, scoring_functions=scoring_functions, eval_type=eval_type, sorted_ref_features=sorted_ref_features, discarded_features=discarded_features, output_dir='results/', uid=uid, top_k=top_k, input_data=X_ts, bottom_features=bottom_features, visualize_imgs=visualize_imgs, n_imgs=n_imgs)
+    eval.evaluate_features(dataset_name=dataset_name, weights_npdict=weights_npdict, scoring_functions=scoring_functions, eval_type=eval_type, sorted_ref_features=sorted_ref_features, discarded_features=discarded_features, output_dir='results/', uid=uid, top_k=top_k, input_data=X_ts, bottom_features=bottom_features, visualize_imgs=visualize_imgs, n_imgs=n_imgs)
