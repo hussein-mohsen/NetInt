@@ -22,6 +22,7 @@ from tensorflow.contrib.learn.python.learn.datasets.base import Datasets
 
 from scipy import stats
 from scipy.spatial import distance
+from scipy.stats import powerlaw, norm
 
 from helper_objects import DataSet
 from tensorflow.python.framework import dtypes
@@ -30,48 +31,34 @@ from hyperopt import space_eval
 from setuptools.dist import Feature
 
 import os
-from prompt_toolkit import output
-from _operator import length_hint
+
+import matplotlib.pyplot as plt
 
 epsilon = 0.00001
 
-# Create the MLP
-# x is the input tensor, activ_funs is a list of activation functions
-# weights and biases are dictionaries with keys = 'w1'/'b1', 'w2'/'b2', etc.
-# returns a list of layers [input layer, hidden layer 1, hidden layer 2, ..., output layer]
-def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
-    layers = [x] # layer indexing: layers[0] > layer 1 (input), layers[1] > layer 2 (1st hidden layer), layers[-1] > output layer
+# scales values s.t. sum = 1
+def totality_scale(values):
+    total = values.sum() + epsilon
+    return (values/total)
 
-    for l in range(1, len(activ_funcs)+1):
-        input_tensor = layers[l-1]
-            
-        weights_key = 'w' + str(l)
-        biases_key = 'b' + str(l)
-        activation_function = activ_funcs[l-1]
-        layer_type = layer_types[l]
+# two-sided vector clipping of values
+# converts values below or above margin to (low or high) exremity values
+def clip_vector(vector, selected_range, range_margin=0.05):   
+    margin_length = (selected_range[1] - selected_range[0]) * range_margin
+    lower_threshold = selected_range[0] + margin_length
+    upper_threshold = selected_range[1] - margin_length
+    vector[vector > upper_threshold] = selected_range[1]
+    vector[vector < lower_threshold] = selected_range[0]
 
-        if(l == len(activ_funcs)):
-            activation_function = 'linear'
-            
-        layer = get_layer(input_tensor, weights[weights_key], biases[biases_key], activation_function, layer_type)
-        layers.append(layer)
-    return layers[-1] # return the last tensor, i.e. output layer
+    return vector
+   
+# returns a pmf from of a vectors histogram
+def calculate_histogram_pmf(vector, selected_range=(), n_bins=20):
+    if len(selected_range) > 0: 
+        vector = clip_vector(vector, selected_range, (1.0/n_bins))
 
-# creates TF layers
-def get_layer(x, w, b, activ_fun, layer_type='ff'):
-    if(layer_type == 'ff'):
-        tf_layer = tf.add(tf.matmul(x, w), b) # linear layer
-        
-        if(activ_fun == 'sigmoid'):
-            tf_layer = tf.nn.sigmoid(tf_layer)
-        elif(activ_fun == 'softmax'):
-            tf_layer = tf.nn.softmax(tf_layer)
-        elif(activ_fun == 'relu'): # not fully tested yet
-            tf_layer = tf.nn.relu(tf_layer)
-    else:
-        raise Exception('Invalid layer type.')
-    
-    return tf_layer
+    vector_histogram, bins = np.histogram(vector, bins=n_bins)
+    return totality_scale(vector_histogram)
 
 # calculates KL divergence of two distributions
 def kl_div(empirical, target_dist):
@@ -80,9 +67,29 @@ def kl_div(empirical, target_dist):
 
     kl_div_value = (empirical * np.log((empirical + epsilon)/(target_dist + epsilon))).sum()
     return kl_div_value
+    
+# Calculate KL div between scaled weights (per row) with scaled target distribution
+def calculate_kl_div_values(input_matrix, seed=1234,
+                            target_distribution='norm', axis=1):
+
+    n_samples = 10000
+    if target_distribution == 'norm':
+        target_dist = norm.rvs(loc=0, scale=0.3, size=n_samples, random_state=seed)
+    elif target_distribution == 'inv_powerlaw': # power law and inverse power law distribution
+        target_dist = (-1) * powerlaw.rvs(a=0.65, loc=-2, scale=4, size=n_samples, random_state=seed)
+    else:
+        raise Exception('Invalid target distribution.')
+
+    # calculate histograms of empirical data and target_dist
+    input_matrix = np.apply_along_axis(calculate_histogram_pmf, axis, input_matrix, (-2, 2))
+    target_dist = calculate_histogram_pmf(target_dist)
+
+    kl_values = np.apply_along_axis(kl_div, axis, input_matrix, target_dist)
+    return kl_values
+
 
 # calculate KS test to compare distance between CDFs of empirical and target_dist samples
-def ks_test(empirical, target_dist, metric='D'):        
+def ks_test(empirical, target_dist, metric='D'):
     ks_results = stats.ks_2samp(empirical, target_dist)
     
     if metric == 'D':
@@ -90,169 +97,44 @@ def ks_test(empirical, target_dist, metric='D'):
     elif metric == 'p_value':
         return ks_results[1]
 
-# scales values s.t. sum = 1
-def totality_scale(values):
-    total = values.sum() + epsilon
-    return (values/total)
-
-# scale all values to [0,1]
-def minmax_scale(values):
-    values = (values - values.min())/((values.max() - values.min() + epsilon))
-    return values
-
-# removes outliers and returns values in [1st-99th] percentile along axis
-def percentile_input_matrix(input_matrix, bottom_percentile=1, top_percentile=99, axis=1):
-    n_items = input_matrix.shape[axis]
-    single_percentile = n_items/100
-    
-    bottom_percentile = int(np.ceil((bottom_percentile/100)*n_items)) # index of bottom percentile
-    top_percentile = int(np.ceil((top_percentile/100)*n_items))
-    
-    input_matrix = np.sort(input_matrix, axis=axis)
-    
-    if(axis == 0):
-        input_matrix = input_matrix[bottom_percentile:top_percentile, :]
-    elif(axis == 1):
-        input_matrix = input_matrix[:, bottom_percentile:top_percentile]
-    
-    return input_matrix
-
-# scales empirical matrix to [0,1] per scale_type
-def scale_input_matrix(input_matrix, shift_type='min', scale_type='minmax', axis=1):
-    if scale_type == 'totality':
-        if shift_type == 'min':
-            input_matrix += abs(input_matrix.min())
-        elif shift_type == 'abs':
-            input_matrix = abs(input_matrix)
-        else:
-            raise Exception('Invalid shift type.')
-    
-        input_matrix = np.apply_along_axis(totality_scale, axis, input_matrix)
-    elif scale_type == 'minmax':
-        input_matrix = np.apply_along_axis(minmax_scale, axis, input_matrix)
-
-    return input_matrix
-
-# scales input vector to [0,1] per scale_type
-def scale_input_vector(input_vector, scale_type='minmax', shift_type='min'):
-    if scale_type == 'totality':
-        if shift_type == 'min':
-            input_vector += abs(input_vector.min())
-        elif shift_type == 'abs':
-            input_vector = abs(input_vector)
-        else:
-            raise Exception('Invalid shift type.')
-        
-        input_vector = totality_scale(input_vector)
-    elif scale_type == 'minmax':
-        input_vector = minmax_scale(input_vector)
-
-    return input_vector
-
-# returns a pmf from of a vectors histogram
-def calculate_histogram_pmf(vector, n_bins=10):
-    vector_histogram, bins = np.histogram(vector, bins=n_bins)
-    return totality_scale(vector_histogram)
-
-# Calculate KL div between scaled weights (per row) with scaled target distribution
-def calculate_scaled_kl_div(input_matrix, seed=1234,
-                            shift_type= 'min', scale_type='minmax',
-                            target_distribution='norm', axis=1):
-
-    input_matrix = scale_input_matrix(input_matrix, shift_type=shift_type, scale_type=scale_type, axis=axis) # scaling
-    input_matrix = np.apply_along_axis(calculate_histogram_pmf, axis, input_matrix) # histograms
-
-    if target_distribution == 'norm':
-        target_dist = np.random.normal(1, 0.3, (1, input_matrix.shape[axis]))
-    elif 'powerlaw' in target_distribution: # power law and inverse power law distribution
-        target_dist = np.random.power(a=1.5, size=(input_matrix.shape[axis], ))
-    else:
-        raise Exception('Invalid target distribution.')
-    
-    target_dist = scale_input_vector(target_dist, scale_type=scale_type) # scaling
-    if 'inv' in target_distribution: # inverted power law distribution; higher density on higher weight values
-        target_dist = (np.max(target_dist) - target_dist) + epsilon # invert distribution after minmax, i.e. 1-each value in scaled sample vector
-
-    # calculate histograms of empirical data and target_dist
-    input_matrix = np.apply_along_axis(calculate_histogram_pmf, axis, input_matrix) # histograms
-    target_dist = calculate_histogram_pmf(target_dist) # histogram
-
-    kl_values = np.apply_along_axis(kl_div, axis, input_matrix, target_dist)
-    return kl_values
-    
 # Calculate KS distance (D or p-)value between scaled weights (per row) with scaled target distribution
-def calculate_ks_distance(input_matrix, seed=1234, shift_type='min', scale_type='minmax',
-                          target_distribution='norm', ks_metric='D', axis=1):
+def calculate_ks_values(input_matrix, seed=1234, target_distribution='norm', ks_metric='D',
+                        selected_range=(-2, 2), range_margin=(1.0/20), axis=1):
     
+    n_samples = 750
     if target_distribution == 'norm':
-        target_dist = np.random.normal(0, 0.1, size=(input_matrix.shape[axis], ))
-    elif 'powerlaw' in target_distribution: # power law and inverse power law distribution
-        target_dist = np.random.power(a=0.35, size=(input_matrix.shape[axis], ))
+        target_dist = norm.rvs(loc=0, scale=0.3, size=n_samples, random_state=seed)
+    elif target_distribution == 'inv_powerlaw':
+        target_dist = (-1) * powerlaw.rvs(a=0.65, loc=-2, scale=4, size=n_samples, random_state=seed)
     else:
         raise Exception('Invalid target distribution.')
-    
-    target_dist = scale_input_vector(target_dist, scale_type=scale_type) # scaling
-    if 'inv' in target_distribution: # inverted power law distribution; higher density on higher values
-        target_dist = (np.max(target_dist) - target_dist) + epsilon # invert distribution after minmax, i.e. 1-each value in scaled sample vector
         
+    input_matrix = np.apply_along_axis(clip_vector, axis, input_matrix, selected_range, range_margin)    
     ks_values = np.apply_along_axis(ks_test, axis, input_matrix, target_dist, ks_metric)
     return ks_values
 
 # calculates distribution distance (of all rows) per tuning type
-def calculate_distance_values(weights, tuning_type='kl_div', shift_type='min', scale_type='minmax',
-                              target_distribution='norm', ks_metric='D',percentiles=False, axis=1):
+def calculate_distance_values(input_matrix, tuning_type='kl_div', target_distribution='norm', 
+                              ks_metric='D',percentiles=False, axis=1):
     if(percentiles): # exclude outliers and keep values in [1st, 99th] percentiles
-        weights = percentile_input_matrix(weights, 1, 99, axis=axis)
-
-    weights = scale_input_matrix(weights, scale_type=scale_type, axis=axis) # scaling
-
-    if 'inv' in target_distribution and scale_type != 'minmax':
-        scale_type = 'minmax' # inverse distributions are based on minmax scaling (1 - original distirbution)
-        print('Note: Inverted distribution to be calculated. Scaling set to minmax.')
+        input_matrix = percentile_input_matrix(input_matrix, 1, 99, axis=axis)
         
     if tuning_type == 'kl_div':
-        distance_values = calculate_scaled_kl_div(weights, scale_type=scale_type, target_distribution=target_distribution, 
+        distance_values = calculate_kl_div_values(input_matrix, target_distribution=target_distribution, 
                                                   axis=axis)
     elif tuning_type == 'ks_test':
-        distance_values = calculate_ks_distance(weights, scale_type=scale_type, target_distribution=target_distribution, 
+        distance_values = calculate_ks_values(input_matrix, target_distribution=target_distribution, 
                                                 ks_metric=ks_metric, axis=axis)
 
     return distance_values
 
-# calculates KL divergence from a target distribution for incoming and outcoming weight distributions
-# KL calculated after min-max scaling to [0, 1] + eps; returns averaged incoming and outcoming scores for each neuron
-def calculate_layer_distance_values(weights_npdict, layer_index, 
-                                    shift_type='min', scale_type='minmax', 
-                                    target_distribution='norm', tuning_type='kl_div', 
-                                    ks_metric='D', percentiles=False):    
-    if layer_index > len(weights_npdict): # output layer or erroneous index
-        raise Exception('Layer index is out of bounds.')
-    else:
-        outcoming_weights = weights_npdict['w'+str(layer_index)]        
-        distance_values = calculate_distance_values(outcoming_weights, tuning_type=tuning_type,shift_type=shift_type, 
-                                                    scale_type=scale_type, target_distribution=target_distribution, 
-                                                    percentiles=percentiles, axis=1)
-
-    
-        if layer_index > 1: # beyond input layer
-            incoming_weights = weights_npdict['w'+str(layer_index-1)]
-            incoming_distance_values = calculate_distance_values(incoming_weights, tuning_type=tuning_type, shift_type=shift_type,
-                                                                 scale_type=scale_type, target_distribution=target_distribution, 
-                                                                 percentiles=percentiles, axis=0)
-
-            distance_values = (distance_values + incoming_distance_values) / 2
-            
-    return distance_values
-
 # gets indices to be tuned (i.e. turned off and replaced by 0 values)
 # available indices are the ones not tuned prior to selection   
-# tuning_type: 'centrality' (default: betweenness centrality) 
-#              'kl_div' (default: with Gaussian)   
+# tuning_type: 'kl_div' (default: with Gaussian)   
 #              'random': 
-def get_off_inds(weights_npdict, avail_inds, off_inds, layer_index, input_list=[], 
-                 k_selected=4, tuning_type='centrality', dt=[('weight', float)], 
-                 shift_type='min', scale_type='minmax', target_distribution='norm',
-                 percentiles=False):
+def get_off_inds(input_matrix, avail_inds, off_inds, layer_index, input_list=[], 
+                 k_selected=4, tuning_type='kl_div', dt=[('weight', float)], 
+                 target_distribution='norm', percentiles=False):
     if(len(avail_inds) == 0):
         select_inds = [-1]
         print('Warning: no more neurons to tune.')
@@ -260,30 +142,15 @@ def get_off_inds(weights_npdict, avail_inds, off_inds, layer_index, input_list=[
         if tuning_type == 'random': # random selection of indices
             select_inds = random.sample(range(len(avail_inds)), k_selected) # indices within avail_inds to be turned off        
         else:
-            if tuning_type == 'centrality': # sorted centrality-based selection
-                increasing_flag = True # for centrality, higher neuron value is better; for distribution-based distance measures, lower is better.
-                
-                weight_graph, layer_boundaries = create_weight_graph(weights_npdict, layer_index)
-                weight_graph = weight_graph.astype(dt)
-                weight_G = nx.from_numpy_matrix(weight_graph) # create graph object
-                
-                # calculate centrality measure values
-                print('Calculating centrality measures...')
-                values = np.array(list(nx.betweenness_centrality(weight_G, k=7, weight='weight').values()))
-                
-                # select the nodes corresponding to the layer since the graph = its nodes + those of preceding 
-                # and following layers
-                layer_start = layer_boundaries[0]; layer_end = layer_boundaries[1]
-                values = values[layer_start:layer_end]
-            elif tuning_type == 'kl_div' or tuning_type == 'ks_test':
+            ##? to implement betweenness centrality in this section as needed
+            
+            if tuning_type == 'kl_div' or tuning_type == 'ks_test':
                 increasing_flag = False
                 
                 # calculate KL divergence from a target distribution (default: Gaussian)
+                values = calculate_distance_values(input_matrix, tuning_type=tuning_type, 
+                                                   target_distribution=target_distribution, percentiles=percentiles, axis=0)
                 print('Calculating distribution distance values per {0}...'.format(tuning_type))
-                values = calculate_layer_distance_values(weights_npdict, layer_index, tuning_type=tuning_type,
-                                                         shift_type=shift_type, scale_type=scale_type, 
-                                                         target_distribution=target_distribution,
-                                                         percentiles=percentiles)
             else:
                 raise Exception('Invalid tuning type value.')
     
@@ -296,59 +163,6 @@ def get_off_inds(weights_npdict, avail_inds, off_inds, layer_index, input_list=[
             select_inds = inds[0:k_selected]
 
     return select_inds # return array of indices to be tuned
-
-# helper function that pads a matrix to create an NxN graph used to
-# create weight graphs on which centrality measures are calculated
-def pad_matrix(input_matrix):
-    rows_increment = max(0, input_matrix.shape[1]-input_matrix.shape[0])
-    cols_increment = max(0, input_matrix.shape[0]-input_matrix.shape[1])
-
-    input_matrix = np.pad(input_matrix, pad_width=((0, rows_increment), (0, cols_increment)), mode='constant', constant_values=(0, 0))
-    return input_matrix
-
-# creates a weight graph at an input layer
-# Layer indexing starts at 1 (input layer = 1, 1st hidden layer = 2, and so forth)
-def create_weight_graph(weights_npdict, layer):
-    if layer == 1: # input layer: edge case where weight graph is made of one layer
-        return pad_matrix(weights_npdict['w'+str(layer)])
-    elif layer > len(weights_npdict): # output layer or erroneous index
-        raise Exception('Layer index is out of bounds.')
-    else: # hidden layer: preceding, current and next layer forming the graph 
-        boundaries = []
-        total_n = 0
-        
-        # create boundaries matrix to help slicing the weight graph
-        for l in range(layer-1, layer+1):
-                total_n += weights_npdict['w'+str(l)].shape[0]
-                boundaries.append(total_n)
-        
-        total_n += weights_npdict['w'+str(l)].shape[1]
-        boundaries.append(total_n)
-            
-        # create the graph of combined nodes implemented as an undirected graph
-        # hence each weight matrix is added twice (as is and as transpose)
-        weight_graph = np.zeros((total_n, total_n))
-        for l in range(layer-1, layer+2):
-
-            weight_matrix = weights_npdict['w'+str(layer)]
-            pre_weight_matrix = weights_npdict['w'+str(layer-1)]
-            
-            layer_start = boundaries[0]
-            layer_end = boundaries[1]
-            matrix_end = total_n
-                
-            if(l == layer): # then two matrices' values to be added to weight_graph: transpose(wlayer-1) and wlayer                            
-                #  w_layer: add incoming and outcoming weight matrices
-                weight_graph[layer_start:layer_end, 0:layer_start] = np.transpose(pre_weight_matrix)
-                weight_graph[layer_start:layer_end, layer_end:matrix_end] = weight_matrix
-            elif(l<layer):
-                # w_layer-1 (pre-layer): add incoming weights of w_layer
-                weight_graph[0:layer_start, layer_start:layer_end] = pre_weight_matrix
-            elif(l>layer):
-                # w_layer+1 (post-layer): add outcoming weights from w_layer
-                weight_graph[layer_end:matrix_end, layer_start:layer_end] = np.transpose(weight_matrix)
-
-    return weight_graph, [layer_start, layer_end]
 
 # helper function that turns off neurons at off_indices (0 value assignment)
 # weights is a dictionary of tf.Variables; tuned layers are [tuned_layers_start, tuned_layers_end] 
@@ -398,7 +212,7 @@ def tune_off_ingoing_weights(off_indices, weights, biases, wi, sess):
         sess.run([tf.assign(weights['w'+str(wi)], updated_weights), tf.assign(biases['b'+str(wi)], updated_biases)])
         print('Ingoing weights and biases into destination layer in w{0} and b{1} tuned.'.format(wi, wi))
 
-# a special function for sigmoid (and sigmoid-like functions), f, whose f(0) != 0
+# a helper function for sigmoid (and sigmoid-like functions), f, whose f(0) != 0
 # these layers' outgoing weights must be reset to 0 before each batch update to ensure tuning runs accurately
 # if layer wi is a sigmoid layer (i.e. activ_funcs[wi-2]='sigmoid' as activ_funcs' index starts at 0 to described layer 2), first hidden layer, outgoing off indices (i.e. rows) in weight matrix w_wi+1 are reset to 0
 def tune_weights_before_batch_optimization(off_indices, weights, activ_funcs, tuning_layer_start, tuning_layer_end, sess):
@@ -408,6 +222,99 @@ def tune_weights_before_batch_optimization(off_indices, weights, activ_funcs, tu
     for wi in range(tuning_weight_start, tuning_weight_end+1):
         if wi >= 2 and activ_funcs[wi-2] not in ('relu', 'linear'):
             tune_off_outgoing_weights(off_indices, weights, wi, sess)
+
+# Creates the MLP
+# x is the input tensor, activ_funs is a list of activation functions
+# weights and biases are dictionaries with keys = 'w1'/'b1', 'w2'/'b2', etc.
+# returns a list of layers [input layer, hidden layer 1, hidden layer 2, ..., output layer]
+def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
+    layers_dict = {0: x} # layer indexing: layers_dict[0] > layer 1 (input), layers_dict[1] > layer 2 (1st hidden layer), layers_dict[last_layer_index] > output layer
+
+    for l in range(1, len(activ_funcs)+1):
+        input_tensor = layers_dict[l-1] # output of previous layer after activation is applied
+            
+        weights_key = 'w' + str(l)
+        biases_key = 'b' + str(l)
+        activation_function = activ_funcs[l-1]
+        layer_type = layer_types[l]
+
+        if(l == len(activ_funcs)):
+            activation_function = 'linear'
+        
+        generic_layer = get_generic_layer(input_tensor, weights[weights_key], biases[biases_key], layer_type)
+        layers_dict[str(l)+'i'] = generic_layer # wa + b before activation function is applied; e.g. layers_dict['2'] = f(layers_dict['2i'])
+        
+        layer = get_activation_function_layer(generic_layer, activation_function)
+        layers_dict[l] = layer
+    return layers_dict
+
+# creates a generic layer without activation function
+def get_generic_layer(x, w, b, layer_type='ff'):
+    if(layer_type == 'ff'):
+        tf_layer = tf.add(tf.matmul(x, w), b) # linear layer
+    else:
+        raise Exception('Invalid layer type.')
+
+    return tf_layer
+
+# creates an activation function layer
+def get_activation_function_layer(tf_layer, activ_fun):
+    if(activ_fun == 'sigmoid'):
+        tf_layer = tf.nn.sigmoid(tf_layer)
+    elif(activ_fun == 'softmax'):
+        tf_layer = tf.nn.softmax(tf_layer)
+    elif(activ_fun == 'relu'): # not fully tested yet
+        tf_layer = tf.nn.relu(tf_layer)
+
+    return tf_layer
+
+# layers size and arr_init define the initialization configuration
+# Example output: For prefix 'o', o1 corresponds for Input layer, o2 for hidden layer 1, etc
+def get_arrdict(layer_sizes, arr_init, prefix):
+    dict = {}
+    
+    n_layers = len(layer_sizes)
+    for l in range(0, n_layers):
+        arr_name = prefix + str(l+1)
+        
+        if(arr_init == 'empty'):
+            dict[arr_name] = np.array([], dtype=int)
+        elif arr_init == 'range':
+            n = layer_sizes[l]
+            dict[arr_name] = np.array(range(n))
+
+    return dict
+
+# layers size and var_init define the architecture and initialization configuration of weights and biases in the network
+# variable type is either weights (2D) or biases (1D) and prefix determines name of resulting variables
+# Example output: For prefix 'w', w1 corresponds for weights between input and first hidden layers, etc.
+def get_vardict(layer_sizes, var_init, var_type, prefix, activ_funcs, init_reduction='fan_in', seed=1234):
+    dict = {}
+    
+    n_layers = len(layer_sizes)
+    for l in range(1, n_layers):
+        var_name = prefix + str(l)
+        n_origin = layer_sizes[l-1]
+        n_dest = layer_sizes[l]
+        
+        if(var_type == 'bias'):
+            var_shape = [n_dest]
+        elif(var_type == 'weight'):
+            var_shape = [n_origin, n_dest]
+
+        if(var_init == 'norm'):
+            std_dev = 1.0
+            if init_reduction == 'fan_in': #  scale std_dev to encourage values to be ~ favorable intervals, e.g. [-2, 2]
+                # scale down by square root of destination layer size
+                std_dev = (1.0/np.sqrt(n_dest))
+                if activ_funcs[l-1] in ('sigmoid', 'relu'): 
+                     std_dev *= 2
+
+            dict[var_name] = tf.Variable(tf.random_normal(var_shape, stddev=std_dev, seed=seed))
+        elif(var_init == 'zeros'):
+            dict[var_name] = tf.Variable(tf.zeros(var_shape, dtype=tf.float32))
+
+    return dict
 
 # reads data
 def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, seed=1234):
@@ -517,44 +424,6 @@ def get_correlated_features(X_tr, Y_tr, X_ts, N):
     X_ts_selected = X_ts[:, selected_columns]
 
     return X_tr_selected, X_ts_selected
-    
-# sets seed of helper function
-def set_seed(seed=1234):
-    tf.set_random_seed(seed)
-    random.seed(seed)
-    np.random.seed(seed=seed)
-    print('Seeds in helper functions set to {}'.format(seed))
-    
-# epochs start at 1, index in data at 0
-# Method and code structure from mnist.next_batch
-def get_next_even_batch(X_tr, Y_tr, start, batch_size, epoch, seed=1234, shuffle=True):
-    end = start + batch_size
-            
-    if end > X_tr.shape[0]:
-        N_remaining_points = X_tr.shape[0] - start
-        remaining_points = X_tr[start:X_tr.shape[0]]
-        remaining_labels = Y_tr[start:Y_tr.shape[0]]
-        
-        if shuffle == True:
-            data_order = np.arange(X_tr.shape[0])
-            np.random.shuffle(data_order)
-
-            X_tr = X_tr[data_order]
-            Y_tr = Y_tr[data_order]
-        
-        N_new_points = batch_size - N_remaining_points
-        new_points = X_tr[0:N_new_points]
-        new_labels = Y_tr[0:N_new_points]
-        
-        batch_x = np.concatenate((remaining_points, new_points), axis=0)
-        batch_y = np.concatenate((remaining_labels, new_labels), axis=0)
-        next_start = N_new_points
-    else:
-        batch_x = X_tr[start:end]
-        batch_y = Y_tr[start:end]
-        next_start = end % X_tr.shape[0]
-
-    return batch_x, batch_y, next_start
 
 # batch_index starts at 0
 def get_next_batch(X_tr, Y_tr, batch_index, batch_size, seed=1234, shuffle=True):
@@ -569,50 +438,12 @@ def get_next_batch(X_tr, Y_tr, batch_index, batch_size, seed=1234, shuffle=True)
     
     return batch_x, batch_y
 
-# layers size and arr_init define the initialization configuration
-# Example output: For prefix 'o', o1 corresponds for Input layer, o2 for hidden layer 1, etc
-def get_arrdict(layer_sizes, arr_init, prefix):
-    dict = {}
-    
-    n_layers = len(layer_sizes)
-    for l in range(0, n_layers):
-        arr_name = prefix + str(l+1)
-        
-        if(arr_init == 'empty'):
-            dict[arr_name] = np.array([], dtype=int)
-        elif arr_init == 'range':
-            n = layer_sizes[l]
-            dict[arr_name] = np.array(range(n))
-
-    return dict
-
-# layers size and var_init define the architecture and initialization configuration of weights and biases in the network
-# variable type is either weights (2D) or biases (1D) and prefix determines name of resulting variables
-# Example output: For prefix 'w', w1 corresponds for weights between input and first hidden layers, etc.
-def get_vardict(layer_sizes, var_init, var_type, prefix, weight_init_reduction='fan_in', seed=1234):
-    dict = {}
-    
-    n_layers = len(layer_sizes)
-    for l in range(1, n_layers):
-        var_name = prefix + str(l)
-        n_origin = layer_sizes[l-1]
-        n_dest = layer_sizes[l]
-        
-        if(var_type == 'bias'):
-            var_shape = [n_dest]
-        elif(var_type == 'weight'):
-            var_shape = [n_origin, n_dest]
-
-        if(var_init == 'norm'):
-            std_dev = 1.0
-            if weight_init_reduction == 'fan_in': # normalize std deviation by fan_in neurons to scale down outputs to be centered around ~1
-                std_dev = 0.0212
-                
-            dict[var_name] = tf.Variable(tf.random_normal(var_shape, stddev=std_dev, seed=seed))
-        elif(var_init == 'zeros'):
-            dict[var_name] = tf.Variable(tf.zeros(var_shape, dtype=tf.float32))
-
-    return dict
+# sets seed of helper function
+def set_seed(seed=1234):
+    tf.set_random_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed=seed)
+    print('Seeds in helper functions set to {}'.format(seed))
 
 # unpacks values from returned hyperopt spaces. 
 # In some instances, returned values are each in a list (even for singular values)
@@ -697,3 +528,20 @@ def save_vardict_to_file(filebasename_prefix, vardict, epoch, seed=1234, dict_na
     output_file = open(filebasename + '.txt', 'w+')
     output_file.write(all_weights_str)
     output_file.close()
+    
+# removes outliers and returns values in [1st-99th] percentile along axis
+def percentile_input_matrix(input_matrix, bottom_percentile=1, top_percentile=99, axis=1):
+    n_items = input_matrix.shape[axis]
+    single_percentile = n_items/100
+    
+    bottom_percentile = int(np.ceil((bottom_percentile/100)*n_items)) # index of bottom percentile
+    top_percentile = int(np.ceil((top_percentile/100)*n_items))
+    
+    input_matrix = np.sort(input_matrix, axis=axis)
+    
+    if(axis == 0):
+        input_matrix = input_matrix[bottom_percentile:top_percentile, :]
+    elif(axis == 1):
+        input_matrix = input_matrix[:, bottom_percentile:top_percentile]
+    
+    return input_matrix

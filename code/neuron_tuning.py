@@ -18,7 +18,6 @@ from sklearn.metrics import accuracy_score, precision_score, roc_auc_score
 import pickle
 
 from scipy.spatial import distance
-from _operator import length_hint
 
 #from tensorflow.examples.tutorials.mnist import input_data
 #mnist = input_data.hf.read_data_sets("MNIST_data/", one_hot=True)
@@ -39,7 +38,7 @@ display_step = 1
 evaluate_features_flag = False
 
 # Tuning parameters
-tuning_type = 'centrality' # tuning type:Centrality-based (default) or KL Divergence
+tuning_type = 'kl_div' # tuning type: Centrality-based (default) or KL Divergence
 scale_type = 'minmax'
 shift_type = 'min' # type of shifting the target distribution to positive values in KL div-based tuning
 target_distribution = 'norm' # target distribution in KL div-based tuning
@@ -72,7 +71,6 @@ args = parser.parse_args()
 
 if args.ts:
     tuning_step = args.ts
-    display_step = tuning_step
     print("Tuning step set to {}".format(tuning_step))
 
 if args.tt:
@@ -141,7 +139,7 @@ with open(input_json_dir+input_json) as json_file:
 
     print("Evaluation type: {0}\nTop k: {1}\nBottom Features Flag: {2}\nVisualize Images: {3}\nN_imgs: {4}\nSorted_ref_features: {5}\nDiscarded_features: {6}".format(eval_type, top_k, bottom_features, visualize_imgs, n_imgs, sorted_ref_features, discarded_features))
     print('Layer sizes: {0} \n Layer types: {1} \n Activation functions: {2} \n Epochs: {3} \n Learning rate: {4} \n Batch size: {5}'.format(layer_sizes, layer_types, activ_funcs, training_epochs, learning_rate, batch_size))
-    
+
 # Complement available indices above. Updated at each neuron tuning step.
 off_indices = hf.get_arrdict(layer_sizes, 'empty', 'o')
 avail_indices = hf.get_arrdict(layer_sizes, 'range', 'a')
@@ -152,18 +150,19 @@ Y = tf.placeholder("float", [None, n_classes])
     
 # Store layers weight & bias
 weight_init = 'norm'
-weight_init_reduction='regular'
 bias_init = 'norm'
+init_reduction='fan_in'
 
-weights = hf.get_vardict(layer_sizes, weight_init, 'weight', 'w', seed=seed)
-tuned_weights = hf.get_vardict(layer_sizes, 'zeros', 'weight', 'w',  weight_init_reduction= weight_init_reduction, seed=seed)
-biases = hf.get_vardict(layer_sizes, bias_init, 'bias', 'b', seed=seed)
+weights = hf.get_vardict(layer_sizes, weight_init, 'weight', 'w', activ_funcs, init_reduction= init_reduction, seed=seed)
+tuned_weights = hf.get_vardict(layer_sizes, 'zeros', 'weight', 'w', activ_funcs, init_reduction= init_reduction, seed=seed)
+biases = hf.get_vardict(layer_sizes, bias_init, 'bias', 'b', activ_funcs, init_reduction= init_reduction, seed=seed)
 
 # Construct the model
-logits = hf.multilayer_perceptron(X, weights, biases, activ_funcs, layer_types)
+nnet = hf.multilayer_perceptron(X, weights, biases, activ_funcs, layer_types)
 
 # Define loss function and optimizer
-loss_op = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=Y))
+output_layer_index = len(layer_sizes)-1 # since indexing starts from 0
+loss_op = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=nnet[output_layer_index], labels=Y))
 optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
 train_op = optimizer.minimize(loss_op)
 
@@ -172,6 +171,7 @@ init = tf.global_variables_initializer()
 
 D = hf.read_dataset(dataset_name, noise_ratio=noise_ratio, seed=seed)
 X_tr, Y_tr = D.train.points, D.train.labels
+X_val, Y_val = D.validation.points, D.validation.labels
 X_ts, Y_ts = D.test.points, D.test.labels
 
 with tf.Session() as sess:
@@ -183,23 +183,26 @@ with tf.Session() as sess:
         print("Batch size set to {}".format(batch_size))
         
     total_batch = int(X_tr.shape[0]/batch_size) # + (X_tr.shape[0]%batch_size != 0)
+    print('Number of batches: {0}'.format(total_batch))
     
     # Training cycle
     for epoch in range(1, training_epochs+1):
         avg_cost = 0.0
         start = time.time()
-            
+
         # tuning step
         if(int(epoch % tuning_step) == 0 and tuning_flag):
-            weights_npdict = sess.run(weights)
+            logits_values = sess.run(nnet, feed_dict={X: X_val, Y: Y_val}) # logits_values[l-1] corresponds to batch inputs (wa+b's) to layer l; shape: (batch_size, number of destination neurons in layer l)
 
             for l in range(tuning_layer_start, tuning_layer_end+1):                
                 print("Tuning on layer {}".format(l))
                 current_off_indices = off_indices['o'+str(l)]        
-                new_off_inds = hf.get_off_inds(weights_npdict, avail_inds=avail_indices['a'+str(l)], off_inds=current_off_indices, 
-                                               layer_index=l, k_selected=k_selected, tuning_type=tuning_type, shift_type=shift_type, 
-                                               scale_type=scale_type, target_distribution=target_distribution, percentiles=percentiles)
-
+                new_off_inds = hf.get_off_inds(logits_values[str(l-1)+'i'], avail_inds=avail_indices['a'+str(l)], off_inds=current_off_indices,
+                                               layer_index=l, k_selected=k_selected, tuning_type=tuning_type, target_distribution=target_distribution, 
+                                               percentiles=percentiles)
+                
+                print(new_off_inds)
+                
                 # update available and off_indices (i.e. indices of tuned neurons)
                 avail_indices['a'+str(l)] = np.delete(avail_indices['a'+str(l)], np.searchsorted(avail_indices['a'+str(l)], new_off_inds))
                 off_indices['o'+str(l)] = np.append(off_indices['o'+str(l)], new_off_inds)
@@ -208,18 +211,41 @@ with tf.Session() as sess:
             hf.tune_weights(off_indices, weights, biases, tuning_layer_start, tuning_layer_end, sess=sess)
             print("Weight tuning done.")
 
-         # Loop over all batches
+        # Loop over all batches
         for i in range(total_batch):
             batch_x, batch_y = D.train.next_batch(batch_size)
 
+            '''
+            ##r scrutinizing tensor values
+            if i % 150 == 0: # scrutinize values on few batches per epoch only for convenience
+                [weight_vals, logit_vals] = sess.run([weights, nnet], feed_dict={X: batch_x, Y:batch_y})
+                for i in range(4):
+                    if i > 0:
+                        print('Min: {0:.2f}, Mean: {1:.2f}, Median: {2:.2f}, Max: {3:.2f} of w{4}'.format(np.min(weight_vals['w'+str(i)]), np.mean(weight_vals['w'+str(i)]), np.median(weight_vals['w'+str(i)]), np.max(weight_vals['w'+str(i)]), i))
+                        print('Min: {0:.2f}, Mean: {1:.2f}, Median: {2:.2f}, Max: {3:.2f} of logits{4}i'.format(np.min(logit_vals[str(i)+'i']), np.mean(logit_vals[str(i)+'i']), np.median(logit_vals[str(i)+'i']), np.max(logit_vals[str(i)+'i']), i))
+                        count = np.sum((logit_vals[str(i)+'i'] >= -2) & (logit_vals[str(i)+'i'] <= 2))
+                        print(count/(logit_vals[str(i)+'i'].shape[0]*logit_vals[str(i)+'i'].shape[1]))
+                        
+                    #print('Min: {0:.2f}, Mean: {1:.2f}, Median: {2:.2f}, Max: {3:.2f} of logits{4}'.format(np.min(logit_vals[i]), np.mean(logit_vals[i]), np.median(logit_vals[i]), np.max(logit_vals[i]), i))
+                
+                #print('====')
+                #np_logits1 = np.dot(batch_x, weight_vals['w1'])
+                #np_logits2 = np.dot(np_logits1, weight_vals['w2'])
+                #print('Min: {0:.2f}, Mean: {1:.2f}, Median: {2:.2f}, Max: {3:.2f} of np_logits{4}'.format(np.min(np_logits1), np.mean(np_logits1), np.median(np_logits1), np.max(np_logits1), 1))
+                #print('Min: {0:.2f}, Mean: {1:.2f}, Median: {2:.2f}, Max: {3:.2f} of np_logits{4}'.format(np.min(np_logits2), np.mean(np_logits2), np.median(np_logits2), np.max(np_logits2), 2))
+
+                print('====')
+            '''
+            
             if epoch >= tuning_step and tuning_flag: # to ensure weights from functions f where f(0) != 0 are tuned off and don't interfere in optimization
                 hf.tune_weights_before_batch_optimization(off_indices, weights, activ_funcs, tuning_layer_start, tuning_layer_end, sess=sess)
-
+                print('batch {0} out of {1}'.format(i, total_batch))
+                
             _, c = sess.run([train_op, loss_op], feed_dict={X: batch_x, Y: batch_y})
-           
+            
             # Compute average loss
             avg_cost += c / total_batch
-            
+
         end = time.time()
             
         # Display logs per epoch step
@@ -231,19 +257,24 @@ with tf.Session() as sess:
         hf.tune_weights(off_indices, weights, biases, tuning_layer_start, tuning_layer_end, sess=sess, tuning_direction='outgoing')
     print("Optimization Done.")
 
-    pred = tf.nn.softmax(logits)  # Apply softmax to logits
+    pred = tf.nn.softmax(nnet[output_layer_index])  # Apply softmax to outputs
 
     # Test model
+    tr_predictions = sess.run(pred, feed_dict={X: X_tr, Y: Y_tr})
     ts_predictions = sess.run(pred, feed_dict={X: X_ts, Y: Y_ts})
-    accuracy = accuracy_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
-    print("Accuracy:", accuracy)
+    
+    tr_accuracy = accuracy_score(np.argmax(Y_tr, 1), np.argmax(tr_predictions, 1))
+    ts_accuracy = accuracy_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
+    print("Train Accuracy: {0}, Test Accuracy: {1}".format(tr_accuracy, ts_accuracy))
 
     if(n_classes == 2):
-        precision = precision_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
-        print("Precision:", precision)
+        tr_precision = precision_score(np.argmax(Y_tr, 1), np.argmax(tr_predictions, 1))
+        ts_precision = precision_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
+        print("Train Precision: {0}, Test Precision: {1}".format(tr_precision, ts_precision))
         
-        auc = roc_auc_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
-        print("AUC ROC:", auc)
+        tr_auc = roc_auc_score(np.argmax(Y_tr, 1), np.argmax(tr_predictions, 1))
+        ts_auc = roc_auc_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
+        print("Train AUC: {0}, Test AUC: {1}".format(tr_auc, ts_auc))
 
     if evaluate_features_flag:
         weights_npdict = sess.run(weights)
