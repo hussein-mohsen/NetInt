@@ -140,6 +140,7 @@ with open(input_json_dir+input_json) as json_file:
     print("Evaluation type: {0}\nTop k: {1}\nBottom Features Flag: {2}\nVisualize Images: {3}\nN_imgs: {4}\nSorted_ref_features: {5}\nDiscarded_features: {6}".format(eval_type, top_k, bottom_features, visualize_imgs, n_imgs, sorted_ref_features, discarded_features))
     print('Layer sizes: {0} \n Layer types: {1} \n Activation functions: {2} \n Epochs: {3} \n Learning rate: {4} \n Batch size: {5}'.format(layer_sizes, layer_types, activ_funcs, training_epochs, learning_rate, batch_size))
 
+# Network and training setup
 # Complement available indices above. Updated at each neuron tuning step.
 off_indices = hf.get_arrdict(layer_sizes, 'empty', 'o')
 avail_indices = hf.get_arrdict(layer_sizes, 'range', 'a')
@@ -200,16 +201,17 @@ with tf.Session() as sess:
                 new_off_inds = hf.get_off_inds(logits_values[str(l-1)+'i'], avail_inds=avail_indices['a'+str(l)], off_inds=current_off_indices,
                                                layer_index=l, k_selected=k_selected, tuning_type=tuning_type, target_distribution=target_distribution, 
                                                percentiles=percentiles)
-                
+
                 print(new_off_inds)
                 
                 # update available and off_indices (i.e. indices of tuned neurons)
                 avail_indices['a'+str(l)] = np.delete(avail_indices['a'+str(l)], np.searchsorted(avail_indices['a'+str(l)], new_off_inds))
                 off_indices['o'+str(l)] = np.append(off_indices['o'+str(l)], new_off_inds)
 
-            # get a tensor with off_inds neurons turned off
+            # get tensors with off_inds neurons turned off
             hf.tune_weights(off_indices, weights, biases, tuning_layer_start, tuning_layer_end, sess=sess)
-            print("Weight tuning done.")
+            hf.tune_masks(off_indices, nnet, tuning_layer_start, tuning_layer_end, sess=sess)
+            print("Tuning done.")
 
         # Loop over all batches
         for i in range(total_batch):
@@ -236,11 +238,7 @@ with tf.Session() as sess:
 
                 print('====')
             '''
-            
-            if epoch >= tuning_step and tuning_flag: # to ensure weights from functions f where f(0) != 0 are tuned off and don't interfere in optimization
-                hf.tune_weights_before_batch_optimization(off_indices, weights, activ_funcs, tuning_layer_start, tuning_layer_end, sess=sess)
-                print('batch {0} out of {1}'.format(i, total_batch))
-                
+
             _, c = sess.run([train_op, loss_op], feed_dict={X: batch_x, Y: batch_y})
             
             # Compute average loss
@@ -253,8 +251,6 @@ with tf.Session() as sess:
             print("\nEpoch:", '%04d' % (epoch))
             print('Execution Time: {0} {1}, Cost: {2}'.format(1000*(end-start), 'ms', avg_cost))
     
-    if tuning_flag: # tuning off outgoing weights and biases one last time after optimization to ensure all values are final before analysis
-        hf.tune_weights(off_indices, weights, biases, tuning_layer_start, tuning_layer_end, sess=sess, tuning_direction='outgoing')
     print("Optimization Done.")
 
     pred = tf.nn.softmax(nnet[output_layer_index])  # Apply softmax to outputs

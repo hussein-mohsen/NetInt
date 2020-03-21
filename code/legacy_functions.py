@@ -1,3 +1,14 @@
+# a helper function for sigmoid (and sigmoid-like functions), f, whose f(0) != 0
+# these layers' outgoing weights must be reset to 0 before each batch update to ensure tuning runs accurately
+# if layer wi is a sigmoid layer (i.e. activ_funcs[wi-2]='sigmoid' as activ_funcs' index starts at 0 to described layer 2), first hidden layer, outgoing off indices (i.e. rows) in weight matrix w_wi+1 are reset to 0
+def tune_weights_before_batch_optimization(off_indices, weights, activ_funcs, tuning_layer_start, tuning_layer_end, sess):
+    tuning_weight_start = max(1, tuning_layer_start-1)
+    tuning_weight_end = tuning_layer_end
+
+    for wi in range(tuning_weight_start, tuning_weight_end+1):
+        if wi >= 2 and activ_funcs[wi-2] not in ('relu', 'linear'):
+            tune_off_outgoing_weights(off_indices, weights, wi, sess)
+            
 # scale all values to [0,1]
 def minmax_scale(values):
     values = (values - values.min())/((values.max() - values.min() + epsilon))

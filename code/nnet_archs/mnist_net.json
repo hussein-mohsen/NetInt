@@ -4,10 +4,19 @@
 		"sizes": [784, 512, 512, 10],
 		"activ_funcs": ["linear", "linear", "linear"]
     },
-    
     "training_params": {
-    	"epochs": 300,
+    	"epochs": 80,
     	"learning_rate": 0.001,
-    	"batch_size": 100
-    }
+    	"batch_size": 256
+    },
+    
+     "evaluation": {
+    	"eval_type": "img",
+    	"top_k": 25,
+    	"bottom_features": false,
+    	"visualize_imgs":true,
+    	"n_imgs":20,
+    	"sorted_ref_features":[],
+    	"discarded_features":[]
+	}
 }

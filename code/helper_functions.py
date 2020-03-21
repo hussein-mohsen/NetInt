@@ -164,7 +164,16 @@ def get_off_inds(input_matrix, avail_inds, off_inds, layer_index, input_list=[],
 
     return select_inds # return array of indices to be tuned
 
-# helper function that turns off neurons at off_indices (0 value assignment)
+# helper function that turns off neuron masks at off_indices (0 value assignment)
+# masks are layers in nnet: nnet['1m'] corresponds to mask following layer 2, i. e. first hidden layer
+def tune_masks(off_indices, nnet, tuning_layer_start, tuning_layer_end, sess):
+    for i in range(tuning_layer_start, tuning_layer_end+1):
+        zeros_replacement_tensor = tf.zeros(off_indices['o'+str(i)].size, tf.float32)
+        updated = tf.scatter_update(nnet[str(i-1)+'m'], off_indices['o'+str(i)], zeros_replacement_tensor) # update tensor
+        sess.run(tf.assign(nnet[str(i-1)+'m'], updated))
+        print('Mask of layer {} tuned.'.format(i))
+            
+# helper function that turns off neuron weights at off_indices (0 value assignment)
 # weights is a dictionary of tf.Variables; tuned layers are [tuned_layers_start, tuned_layers_end] 
 # tuned weight matrices are wj s.t. j = [max(1, tuning_layer_start-1), tuned_layers_end] 
 # e.g. by default, for layers 2 and 3, tuning layer start and end are 2 and 3, to-be-tuned matrices are w1, 2, and 3
@@ -212,23 +221,12 @@ def tune_off_ingoing_weights(off_indices, weights, biases, wi, sess):
         sess.run([tf.assign(weights['w'+str(wi)], updated_weights), tf.assign(biases['b'+str(wi)], updated_biases)])
         print('Ingoing weights and biases into destination layer in w{0} and b{1} tuned.'.format(wi, wi))
 
-# a helper function for sigmoid (and sigmoid-like functions), f, whose f(0) != 0
-# these layers' outgoing weights must be reset to 0 before each batch update to ensure tuning runs accurately
-# if layer wi is a sigmoid layer (i.e. activ_funcs[wi-2]='sigmoid' as activ_funcs' index starts at 0 to described layer 2), first hidden layer, outgoing off indices (i.e. rows) in weight matrix w_wi+1 are reset to 0
-def tune_weights_before_batch_optimization(off_indices, weights, activ_funcs, tuning_layer_start, tuning_layer_end, sess):
-    tuning_weight_start = max(1, tuning_layer_start-1)
-    tuning_weight_end = tuning_layer_end
-
-    for wi in range(tuning_weight_start, tuning_weight_end+1):
-        if wi >= 2 and activ_funcs[wi-2] not in ('relu', 'linear'):
-            tune_off_outgoing_weights(off_indices, weights, wi, sess)
-
 # Creates the MLP
 # x is the input tensor, activ_funs is a list of activation functions
 # weights and biases are dictionaries with keys = 'w1'/'b1', 'w2'/'b2', etc.
-# returns a list of layers [input layer, hidden layer 1, hidden layer 2, ..., output layer]
+# returns a dictionary of layers 0: input layer, '1i': wx+b input to first hidden layer, '1f': f(wx+b), '1m': 0 if neuron masked, 1 otherwise, '1': 1f*1m elementwise, '2i': same as 1i but for second hidden layer, ... 'k' for output layer
 def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
-    layers_dict = {0: x} # layer indexing: layers_dict[0] > layer 1 (input), layers_dict[1] > layer 2 (1st hidden layer), layers_dict[last_layer_index] > output layer
+    layers_dict = {0: x} # layer indexing: layers_dict[0] is layer 1 (input), layers_dict[1] is layer 2 (1st hidden layer), layers_dict[last_layer_index] is output layer
 
     for l in range(1, len(activ_funcs)+1):
         input_tensor = layers_dict[l-1] # output of previous layer after activation is applied
@@ -245,7 +243,14 @@ def multilayer_perceptron(x, weights, biases, activ_funcs, layer_types):
         layers_dict[str(l)+'i'] = generic_layer # wa + b before activation function is applied; e.g. layers_dict['2'] = f(layers_dict['2i'])
         
         layer = get_activation_function_layer(generic_layer, activation_function)
-        layers_dict[l] = layer
+        layers_dict[str(l)+'f'] = layer
+        
+        mask_layer = get_mask_layer(layer)
+        layers_dict[str(l)+'m'] = mask_layer
+        
+        resulting_layer = tf.math.multiply(layer, mask_layer)
+        layers_dict[l] = resulting_layer
+        
     return layers_dict
 
 # creates a generic layer without activation function
@@ -267,6 +272,16 @@ def get_activation_function_layer(tf_layer, activ_fun):
         tf_layer = tf.nn.relu(tf_layer)
 
     return tf_layer
+
+# creates a mask layer
+def get_mask_layer(tf_layer):
+    if(len(tf_layer.shape) == 1):
+        mask_length = tf_layer.shape[0]
+    else:
+        mask_length = tf_layer.shape[1]
+        
+    mask_layer = tf.Variable(tf.ones(mask_length), trainable=False)
+    return mask_layer
 
 # layers size and arr_init define the initialization configuration
 # Example output: For prefix 'o', o1 corresponds for Input layer, o2 for hidden layer 1, etc
