@@ -193,12 +193,12 @@ with tf.Session() as sess:
 
         # tuning step
         if(int(epoch % tuning_step) == 0 and tuning_flag):
-            logits_values = sess.run(nnet, feed_dict={X: X_val, Y: Y_val}) # logits_values[l-1] corresponds to batch inputs (wa+b's) to layer l; shape: (batch_size, number of destination neurons in layer l)
+            nnet_values = sess.run(nnet, feed_dict={X: X_val, Y: Y_val}) # nnet_values[l-1] corresponds to batch inputs (wa+b's) to layer l; shape: (batch_size, number of destination neurons in layer l)
 
             for l in range(tuning_layer_start, tuning_layer_end+1):                
                 print("Tuning on layer {}".format(l))
                 current_off_indices = off_indices['o'+str(l)]        
-                new_off_inds = hf.get_off_inds(logits_values[str(l-1)+'i'], avail_inds=avail_indices['a'+str(l)], off_inds=current_off_indices,
+                new_off_inds = hf.get_off_inds(nnet_values[str(l-1)+'i'], avail_inds=avail_indices['a'+str(l)], off_inds=current_off_indices,
                                                layer_index=l, k_selected=k_selected, tuning_type=tuning_type, target_distribution=target_distribution, 
                                                percentiles=percentiles)
 

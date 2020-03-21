@@ -1,7 +1,6 @@
-from helper_functions import read_dataset, multilayer_perceptron, get_vardict, set_seed, unpack_dict, get_best_result
-
-from hyperopt import fmin, hp, Trials, tpe, space_eval, STATUS_OK
+import helper_functions as hf
 import tensorflow as tf
+from hyperopt import fmin, hp, Trials, tpe, space_eval, STATUS_OK
 
 import numpy as np
 import time
@@ -11,6 +10,7 @@ from sklearn.metrics import accuracy_score, precision_score, roc_auc_score
 
 import collections
 import random
+import sys
 
 # get data using read_dataset()
 # feed train_model to fmin()
@@ -19,8 +19,10 @@ import random
 # the function to be fed to hyperopt's fmin()
 # X and Y are tf.placeholders, D is a Dataset object
 def train_model(space):
-    dataset_name = 'diabetes' #'diabetes' #'psychencode' #'mnist'
-    D = read_dataset(dataset_name=dataset_name)
+    dataset_name = 'xor' #'moons' #'psychencode' #'mnist'
+    print("Dataset name: {0}".format(dataset_name))
+
+    D = hf.read_dataset(dataset_name=dataset_name)
     X_tr, Y_tr = D.train.points, D.train.labels
     X_ts, Y_ts = D.test.points, D.test.labels
 
@@ -32,7 +34,7 @@ def train_model(space):
     activ_func2= str(space["activ_func2"])
     activ_func3= str(space["activ_func3"])
     
-    training_epochs = 400
+    training_epochs = 500
     display_step = min(50, int(training_epochs/2))
         
     print("Batch size: {0} \nlearning rate: {1} \nn_hidden_1: {2} \nn_hidden_2: {3} \n" \
@@ -56,16 +58,18 @@ def train_model(space):
     layer_types = ["ff", "ff", "ff", "ff"]
     activ_funcs = [activ_func1, activ_func2, activ_func3]
     
-    weights = get_vardict(layer_sizes, 'norm', 'weight', 'w')
-    biases = get_vardict(layer_sizes, 'norm', 'bias', 'b')
+    init_reduction = 'fan_in'
+    weights = hf.get_vardict(layer_sizes, 'norm', 'weight', 'w', activ_funcs, init_reduction)
+    biases = hf.get_vardict(layer_sizes, 'norm', 'bias', 'b', activ_funcs, init_reduction)
 
     print("Layer sizes: {}".format(layer_sizes)) 
     print("Activation_funcs: {}".format(activ_funcs))
 
     # get MLP
-    logits = multilayer_perceptron(X, weights, biases, activ_funcs, layer_types)
+    nnet = hf.multilayer_perceptron(X, weights, biases, activ_funcs, layer_types)
     
-    loss_op = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=Y))
+    output_layer_index = len(layer_sizes)-1 # since indexing starts from 0
+    loss_op = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=nnet[output_layer_index], labels=Y))
     optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
     train_op = optimizer.minimize(loss_op)
         
@@ -94,7 +98,7 @@ def train_model(space):
 
             if(epoch % display_step == 0): 
                 # Test model    
-                pred = tf.nn.softmax(logits)  # Apply softmax to logits
+                pred = tf.nn.softmax(nnet[output_layer_index])  # Apply softmax to outputs
 
                 ts_predictions = sess.run(pred, feed_dict={X: X_ts, Y: Y_ts})
                 accuracy = accuracy_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
@@ -117,8 +121,7 @@ def train_model(space):
     
 def main():
     print("Start")
-    
-    set_seed(1234)
+    hf.set_seed(1234)
 
     '''
     # to train a single model
@@ -138,27 +141,27 @@ def main():
 
     # expanded space
     space = {
-        'learning_rate': hp.uniform('learning_rate', 0.001, 0.05),
-        'batch_size': hp.uniform('batch_size', 50, 500),
-        'activ_func1': hp.choice('activ_func1', ('relu', 'sigmoid')),
-        'activ_func2': hp.choice('activ_func2', ('relu', 'sigmoid')),
-        'activ_func3': hp.choice('activ_func3', ['softmax']),
-        'n_hidden_1': hp.uniform('n_hidden_1', 300, 600),
-        'n_hidden_2': hp.uniform('n_hidden_2', 300, 600)
-    }
+                'learning_rate': hp.uniform('learning_rate', 0.01, 0.05), 
+                'batch_size': hp.choice('batch_size', (16, 32, 64)), 
+                'activ_func1': hp.choice('activ_func1', ('relu', 'sigmoid')), 
+                'activ_func2': hp.choice('activ_func2', ('relu', 'sigmoid')), 
+                'activ_func3': hp.choice('activ_func3', ['softmax']), 
+                'n_hidden_1': hp.uniform('n_hidden_1', 40, 60), 
+                'n_hidden_2': hp.uniform('n_hidden_2', 40, 60)
+            }
 
     t = Trials()
-    best = fmin(train_model, space=space, algo=tpe.suggest, max_evals=40, trials=t)
+    best = fmin(train_model, space=space, algo=tpe.suggest, max_evals=100, trials=t)
     print('TPE best: {}'.format(space_eval(space, best)))
 
     for trial in t.trials:
         try:
-            trial_hyperparam_space = unpack_dict(trial['misc']['vals'])        
+            trial_hyperparam_space = hf.unpack_dict(trial['misc']['vals'])        
             print('{} --> {}'.format(trial['result'], space_eval(space, trial_hyperparam_space)))
         except:
             print('Error with a hyperparameter space occurred.')
             continue
 
-    print("Best results: {}".format(get_best_result(t, space, metric='accuracy')))
+    print("Best results: {}".format(hf.get_best_result(t, space, metric='accuracy')))
 
 main()
