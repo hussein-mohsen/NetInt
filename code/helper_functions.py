@@ -56,8 +56,10 @@ def clip_vector(vector, selected_range, range_margin=0.05):
 def calculate_histogram_pmf(vector, selected_range=(), n_bins=20):
     if len(selected_range) > 0: 
         vector = clip_vector(vector, selected_range, (1.0/n_bins))
-
-    vector_histogram, bins = np.histogram(vector, bins=n_bins)
+        vector_histogram, bins = np.histogram(vector, bins=n_bins, range=selected_range)
+    else:
+        vector_histogram, bins = np.histogram(vector, bins=n_bins)
+    
     return totality_scale(vector_histogram)
 
 # calculates KL divergence of two distributions
