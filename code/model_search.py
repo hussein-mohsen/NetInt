@@ -19,7 +19,7 @@ import sys
 # the function to be fed to hyperopt's fmin()
 # X and Y are tf.placeholders, D is a Dataset object
 def train_model(space):
-    dataset_name = 'xor' #'moons' #'psychencode' #'mnist'
+    dataset_name = 'mnist' #'moons' #'psychencode' #'mnist'
     print("Dataset name: {0}".format(dataset_name))
 
     D = hf.read_dataset(dataset_name=dataset_name)
@@ -34,7 +34,7 @@ def train_model(space):
     activ_func2= str(space["activ_func2"])
     activ_func3= str(space["activ_func3"])
     
-    training_epochs = 500
+    training_epochs = 300
     display_step = min(50, int(training_epochs/2))
         
     print("Batch size: {0} \nlearning rate: {1} \nn_hidden_1: {2} \nn_hidden_2: {3} \n" \
@@ -116,7 +116,10 @@ def train_model(space):
                 print("Epoch duration: {0}".format(str(end-start)+" sec.\n"))
                 
     # train and return loss
-    return {'auc': auc, 'accuracy': accuracy, 'precision': precision, 'loss': avg_loss_value, 'status': STATUS_OK}
+    if n_classes == 2:
+        return {'auc': auc, 'accuracy': accuracy, 'precision': precision, 'loss': avg_loss_value, 'status': STATUS_OK}
+    else:
+        return {'accuracy': accuracy, 'loss': avg_loss_value, 'status': STATUS_OK}
 
     
 def main():
@@ -142,16 +145,16 @@ def main():
     # expanded space
     space = {
                 'learning_rate': hp.uniform('learning_rate', 0.01, 0.05), 
-                'batch_size': hp.choice('batch_size', (16, 32, 64)), 
+                'batch_size': hp.choice('batch_size', (128, 256, 512, 1024)), 
                 'activ_func1': hp.choice('activ_func1', ('relu', 'sigmoid')), 
                 'activ_func2': hp.choice('activ_func2', ('relu', 'sigmoid')), 
                 'activ_func3': hp.choice('activ_func3', ['softmax']), 
-                'n_hidden_1': hp.uniform('n_hidden_1', 40, 60), 
-                'n_hidden_2': hp.uniform('n_hidden_2', 40, 60)
+                'n_hidden_1': hp.uniform('n_hidden_1', 500, 540), 
+                'n_hidden_2': hp.uniform('n_hidden_2', 500, 540)
             }
 
     t = Trials()
-    best = fmin(train_model, space=space, algo=tpe.suggest, max_evals=100, trials=t)
+    best = fmin(train_model, space=space, algo=tpe.suggest, max_evals=50, trials=t)
     print('TPE best: {}'.format(space_eval(space, best)))
 
     for trial in t.trials:
