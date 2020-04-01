@@ -333,6 +333,18 @@ def get_vardict(layer_sizes, var_init, var_type, prefix, activ_funcs, init_reduc
 
     return dict
 
+# returns a reduced architecture (layer_sizes) equal to one after tuning is over
+def reduce_architecture(layer_sizes, tuning_step, epochs, k_selected, n_tuned_layers, start_layer=1):
+    print('Original architecture: {0}'.format(layer_sizes))
+    total_k_selected = (n_tuned_layers * k_selected) * np.floor(epochs / tuning_step) # total number of neurons to be removed
+
+    for l in range(n_tuned_layers):
+        layer_sizes[start_layer+l] -= int((total_k_selected / n_tuned_layers))
+    
+    print('Reduced architecture: {0}'.format(layer_sizes))
+    
+    return layer_sizes
+
 # reads data
 def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, seed=1234):
     # parameters used on dataset-specific basis

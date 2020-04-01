@@ -64,8 +64,9 @@ parser.add_argument("--nt", type=int, help="Number of tuned layers")
 parser.add_argument("--ds", help="Dataset name")
 parser.add_argument("--ij", help="Input network JSON file")
 parser.add_argument("--st", help="Distribution shift type") # shift type of the weight distribution to positive
-parser.add_argument("--td", help="Target distirubion for KL-divergence based comparisons.") # shift type of the weight distribution to positive
+parser.add_argument("--td", help="Target distirubion for KL-divergence based comparisons") # shift type of the weight distribution to positive
 parser.add_argument("--nr", type=float, help="Noise ratio (added to data)")
+parser.add_argument("--ar", type=int, help="Architecture reduction boolean")
 
 args = parser.parse_args()
 
@@ -112,8 +113,10 @@ if args.ts or args.tt:
     tuning_flag = True
     print("Tuning flag turned on")
 
-tuning_layer_end = tuning_layer_start + n_tuned_layers - 1 # choose layers on which tuning is executed
-print('Tuning layer start, end: {0}, {1}'.format(tuning_layer_start, tuning_layer_end))
+arch_reduction_flag = False
+if args.ar == 1:
+    arch_reduction_flag = True
+    print("Architecture reduction flag turned on")
     
 with open(input_json_dir+input_json) as json_file:    
     json_data = json.load(json_file)
@@ -140,6 +143,14 @@ with open(input_json_dir+input_json) as json_file:
     print("Evaluation type: {0}\nTop k: {1}\nBottom Features Flag: {2}\nVisualize Images: {3}\nN_imgs: {4}\nSorted_ref_features: {5}\nDiscarded_features: {6}".format(eval_type, top_k, bottom_features, visualize_imgs, n_imgs, sorted_ref_features, discarded_features))
     print('Layer sizes: {0} \n Layer types: {1} \n Activation functions: {2} \n Epochs: {3} \n Learning rate: {4} \n Batch size: {5}'.format(layer_sizes, layer_types, activ_funcs, training_epochs, learning_rate, batch_size))
 
+tuning_layer_end = tuning_layer_start + n_tuned_layers - 1 # choose layers on which tuning is executed
+print('Tuning layer start, end: {0}, {1}'.format(tuning_layer_start, tuning_layer_end))
+
+if arch_reduction_flag:
+    layer_sizes = hf.reduce_architecture(layer_sizes, tuning_step, training_epochs, k_selected, n_tuned_layers, start_layer=1) # start layer 1 corresponds to layer 2, i.e. first hidden layer
+    tuning_flag = False
+    print("Architecture reduction done. Tuning flag turned off.")
+    
 # Network and training setup
 # Complement available indices above. Updated at each neuron tuning step.
 off_indices = hf.get_arrdict(layer_sizes, 'empty', 'o')
