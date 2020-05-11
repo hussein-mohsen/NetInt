@@ -9,7 +9,7 @@ import tensorflow as tf
 import networkx as nx
 import collections
 
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.model_selection import train_test_split
 
 from numpy.random.mtrand import shuffle
@@ -30,9 +30,9 @@ from tensorflow.python.framework import dtypes
 from hyperopt import space_eval
 from setuptools.dist import Feature
 
+import re
 import os
-
-import matplotlib.pyplot as plt
+import platform
 
 epsilon = 0.00001
 
@@ -346,9 +346,9 @@ def reduce_architecture(layer_sizes, tuning_step, epochs, k_selected, n_tuned_la
     return layer_sizes
 
 # reads data
-def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, seed=1234):
+def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, scaling_type='minmax', seed=1234):
     # parameters used on dataset-specific basis
-    minmax_scaling = False
+    feature_scaling = False
     noise_type = 'zeros' # binomial noise is default
 
     if dataset_name == 'mnist':
@@ -391,7 +391,7 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, see
 
         Y_ts = np.maximum(Y_ts, 0, Y_ts) # max w/ 0 to fix artifact in data where some y vales < 0
         
-        minmax_scaling = True
+        feature_scaling = True
         noise_type = 'norm' # Gaussian noise
     elif dataset_name in ('xor', 'moons'):
         N = 4000 # number of data points
@@ -414,13 +414,124 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, see
         
         X_tr, X_ts, Y_tr, Y_ts = train_test_split(X, Y, test_size=0.2, random_state=seed)
         X_tr, X_val, Y_tr, Y_val = train_test_split(X_tr, Y_tr, test_size=0.25, random_state=seed) # Final split: 60-20-20%
+    elif 'AML' in dataset_name:
+        task_id = int(re.search('AML_(\d)', dataset_name).group(1))
+        
+        drug_filename = '../data/AML-Drug-Sensitivity/S10_Drug_Responses.csv' # drug one-hot encodings included in input data
+        drug_data = np.genfromtxt(drug_filename, usecols=(0, 1, 2), deletechars="~!@#$%^&*()=+~\|]}[{'; /?.>,<", delimiter=',', skip_header=1, dtype=[('inhibitor', 'U25'), ('lab_id', 'U10'), ('ic50', 'f8')], encoding='utf-8')
 
-    if minmax_scaling:
-        scaler = MinMaxScaler()
+        drug_list = np.unique(drug_data['inhibitor'])
+        drug_ind = {}
+        for d in range(len(drug_list)):
+            drug_ind[drug_list[d]] = d # index of each drug in the list of unique drugs; to be used when generating final dataset
+        
+        n_drugs = len(drug_list)
+        
+        X_cols = n_drugs # baseline
+
+        if task_id < 4: # expression profiles included in tasks 1-3
+            expr_filename = '../data/AML-Drug-Sensitivity/S8_Gene_Counts_RPKM.csv'
+        
+            expr_cols = 451
+            expr_samples = np.genfromtxt(expr_filename, usecols=np.arange(2, expr_cols), max_rows=1, names=True, deletechars="~!@#$%^&*()=+~\|]}[{'; /?.>,<", delimiter=',', encoding='utf-8').dtype.names
+            expr_genes = np.genfromtxt(expr_filename, usecols=(0, 1), names=True, dtype=[('Gene', 'U25'), ('Symbol', 'U25')], delimiter=',')
+        
+            expr_data = np.genfromtxt(expr_filename, usecols=np.arange(2, expr_cols), skip_header=1, delimiter=',')
+            n_expr_genes = expr_data.shape[0];
+            X_cols += n_expr_genes # include gene expression vectors
+            
+            expr_sample_ind = {} # index of a expr_samples is its col index in expression file; dict to be used when creating final dataset
+            for s in range(len(expr_samples)):
+                expr_sample_ind[expr_samples[s]] = s
+                
+        if task_id > 1: # variant matrix included in tasks 2-4
+            var_filename = '../data/AML-Drug-Sensitivity/Variants_Samples_Impact_Matrix.csv' # S x G matrix IM; IM[s, g] = total inverted SIFT score in gene g in sample s; the higher value is, the more deleterious the impact in g in s
+            
+            var_cols = 3334
+            var_genes = np.genfromtxt(var_filename, usecols=np.arange(2, var_cols), max_rows=1, names=True, deletechars="~!@#$%^&*()=+~\|]}[{'; /?.>,<", delimiter=',', encoding='utf-8').dtype.names
+            var_samples = np.asarray(np.genfromtxt(var_filename, usecols=(0), names=True, dtype=[('labId', 'U10')], delimiter=',').tolist()).flatten()
+            
+            var_data = np.genfromtxt(var_filename, usecols=np.arange(2, var_cols), skip_header=1, delimiter=',')
+            
+            if task_id == 2: 
+                var_data = np.sum(var_data, axis=1)
+                X_cols += 1 # include singular vaiant deleteriousness count
+            else: 
+                X_cols += var_data.shape[1] # number of genes in which there are variants        
+                
+            var_sample_ind = {} # index of a var_samples is its col index in variants file; dict to be used when creating final dataset
+            for s2 in range(len(var_samples)):
+                var_sample_ind[var_samples[s2]] = s2
+        
+        drug_inds = []; expr_sample_inds = []; var_sample_inds = []; selected_points = []
+        for i in range(drug_data.shape[0]):
+            expr_include_point = False; var_include_point = False
+            if task_id < 4 and drug_data['lab_id'][i] in expr_sample_ind.keys():
+                expr_include_point = True
+                
+            if  task_id > 1 and drug_data['lab_id'][i] in var_sample_ind.keys():
+                var_include_point = True
+                
+            include_point = expr_include_point
+            if task_id > 1 and task_id <4:
+                include_point = include_point and var_include_point
+            elif task_id > 3:
+                include_point = var_include_point
+            
+            if include_point:
+                if task_id < 4:
+                    expr_sample_inds.append(expr_sample_ind[drug_data['lab_id'][i]]) # used to select expression profile as part of input
+                
+                if task_id > 1:
+                    var_sample_inds.append(var_sample_ind[drug_data['lab_id'][i]]) # used to select expression profile as part of input
+                
+                drug_inds.append(drug_ind[drug_data['inhibitor'][i]]) # used for to build one-hot encoded vector as part of input
+                selected_points.append(i)
+        
+        X = np.zeros((len(drug_inds), X_cols))
+        
+        drug_col_start = 0 # drugs vector first, all tasks
+        X[np.arange(X.shape[0]), drug_col_start + np.array(drug_inds)] = 1 # one-hot encoded drug vector block in input dataset
+        
+        if task_id < 4: # expression vectors second, if needed in task at hand
+            expr_col_start = n_drugs; expr_col_end = expr_col_start + n_expr_genes
+            X[:, expr_col_start:expr_col_end] = expr_data[:, expr_sample_inds].T # expression profiles block, tasks 1-3
+            
+        if task_id > 1 and task_id < 4:
+            var_col_start = expr_col_start + n_expr_genes
+            if task_id == 2: # drug vector > expression vector > variation (deleteriousness) singular, sum value
+                var_col_end = var_col_start + 1
+                X[:, var_col_start] = var_data[var_sample_inds] 
+            elif task_id == 3: # drug vector > expression vector > variation (deleteriousness) vector
+                var_col_end = var_col_start + var_data.shape[1]
+                X[:, var_col_start:var_col_end] = var_data[var_sample_inds, :]
+        elif task_id == 4: # drug vector > variation (deleteriousness) vector
+            var_col_start = n_drugs; var_col_end = var_col_start + var_data.shape[1]
+            X[:, var_col_start:var_col_end] = var_data[var_sample_inds, :] 
+                
+        Y = drug_data['ic50'][selected_points]
+        
+        threshold = 5
+        Y[Y <= threshold] = 0; Y[Y > threshold] = 1; Y = Y.astype('int32') # binarize task
+        
+        print(X.shape)
+        print(Y.shape)
+        
+        X_tr, X_ts, Y_tr, Y_ts = train_test_split(X, Y, test_size=0.2, random_state=seed)
+        X_tr, X_val, Y_tr, Y_val = train_test_split(X_tr, Y_tr, test_size=0.25, random_state=seed) # Final split: 60-20-20%
+
+        feature_scaling = True
+        
+    if feature_scaling:
+        if scaling_type == 'minmax':
+            scaler = MinMaxScaler()
+        elif scaling_type == 'standard':
+            scaler = StandardScaler()
+            
         X_tr = scaler.fit_transform(X_tr)
-        X_val = scaler.fit_transform(X_val)
+        X_val = scaler.transform(X_val)
         X_ts = scaler.transform(X_ts)
-        print('Minmax scaling done.')
+        print('{0} scaling done.'.format(scaling_type))
     
     if one_hot_encoding and dataset_name != 'mnist': # mnist labels are already one-hot encoded
             n_values = len(np.unique(Y_tr))
