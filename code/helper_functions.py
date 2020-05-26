@@ -349,6 +349,7 @@ def reduce_architecture(layer_sizes, tuning_step, epochs, k_selected, n_tuned_la
 def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, scaling_type='minmax', seed=1234):
     # parameters used on dataset-specific basis
     feature_scaling = False
+    scaling_type = 'minmax'
     noise_type = 'zeros' # binomial noise is default
 
     if dataset_name == 'mnist':
@@ -520,7 +521,8 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, sca
         X_tr, X_ts, Y_tr, Y_ts = train_test_split(X, Y, test_size=0.2, random_state=seed)
         X_tr, X_val, Y_tr, Y_val = train_test_split(X_tr, Y_tr, test_size=0.25, random_state=seed) # Final split: 60-20-20%
 
-        feature_scaling = True
+        feature_scaling = True; 
+        scaling_type='standard'
         
     if feature_scaling:
         if scaling_type == 'minmax':

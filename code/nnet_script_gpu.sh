@@ -1,15 +1,16 @@
 #!/bin/bash
 
 #SBATCH --partition=gpu
-#SBATCH --job-name=tuning_experiment
+#SBATCH --job-name=model_search_experiment
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=25GB
+#SBATCH --mem=30GB
+#SBATCH --time=23:59:59
 
 start_time=$(date +%s)
 date
-module restore cuda
-source activate dlnn
+module restore cuda90
+source activate tensorflow112
 
 echo "$@"
 date
