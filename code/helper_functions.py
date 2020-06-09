@@ -28,7 +28,6 @@ from helper_objects import DataSet
 from tensorflow.python.framework import dtypes
 
 from hyperopt import space_eval
-from setuptools.dist import Feature
 
 import re
 import os
@@ -523,18 +522,40 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, sca
 
         feature_scaling = True; 
         scaling_type='standard'
+    elif 'TCGA_survival' in dataset_name:
+        survival_filename = '../data/TCGA_survival/'+dataset_name+'_data_processed.csv'
+
+        print(survival_filename)
         
+        with open(survival_filename) as f:
+            ncols = len(f.readline().split(','))
+    
+        survival_data =  np.genfromtxt(survival_filename, delimiter=',', skip_header=1, usecols=range(1, ncols)) # skip first column with TCGA barcodes
+        
+        Y = survival_data[:, 0:3] # col 0: start, 1: end, etc.
+        X = survival_data[:, 4:survival_data.shape[1]]
+
+        X_tr, X_ts, Y_tr, Y_ts = train_test_split(X, Y, test_size=0.2, random_state=seed)
+        X_tr, X_val, Y_tr, Y_val = train_test_split(X_tr, Y_tr, test_size=0.25, random_state=seed)
+
+        one_hot_encoding = False
+        feature_scaling = True
+        scaling_type = 'standard'
+
     if feature_scaling:
+        scaling_cols = get_scaling_cols(X_tr)
+        print(scaling_cols)
+        
         if scaling_type == 'minmax':
             scaler = MinMaxScaler()
         elif scaling_type == 'standard':
             scaler = StandardScaler()
             
-        X_tr = scaler.fit_transform(X_tr)
-        X_val = scaler.transform(X_val)
-        X_ts = scaler.transform(X_ts)
+        X_tr[:, scaling_cols] = scaler.fit_transform(X_tr[:, scaling_cols])
+        X_val[:, scaling_cols] = scaler.transform(X_val[:, scaling_cols])
+        X_ts[:, scaling_cols] = scaler.transform(X_ts[:, scaling_cols])
         print('{0} scaling done.'.format(scaling_type))
-    
+
     if one_hot_encoding and dataset_name != 'mnist': # mnist labels are already one-hot encoded
             n_values = len(np.unique(Y_tr))
             Y_tr = np.eye(n_values)[Y_tr]
@@ -554,6 +575,15 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, sca
     test = DataSet(X_ts, Y_ts)
 
     return Datasets(train=train, validation=validation, test=test)  
+
+# returns indices of columns to be scaled, i.e. non-binary columns
+def get_scaling_cols(X):
+    scaling_cols = []
+    for i in range(X.shape[1]):
+        if(len(np.unique(X[:, i])) > 2):
+            scaling_cols.append(i)
+    
+    return scaling_cols
 
 # return N columns with highest correlation with the label in training data
 def get_correlated_features(X_tr, Y_tr, X_ts, N):
