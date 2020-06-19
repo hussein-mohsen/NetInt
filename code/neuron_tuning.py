@@ -18,6 +18,7 @@ from sklearn.metrics import accuracy_score, precision_score, roc_auc_score
 import pickle
 
 from scipy.spatial import distance
+from scipy.special import expit
 
 #from tensorflow.examples.tutorials.mnist import input_data
 #mnist = input_data.hf.read_data_sets("MNIST_data/", one_hot=True)
@@ -29,13 +30,14 @@ batch_size = 100
 
 dataset_name = 'mnist' #mnist'
 input_json_dir = 'nnet_archs/'
-input_json = 'mnist_net.json'
+input_json = 'mnist-nonlinear_net.json'
 
 # Set random seed for replication
-seed=1234
+seed=np.random.randint(9999)
 hf.set_seed(seed=seed)
 display_step = 1
 evaluate_features_flag = False
+save_weights = True
 
 # Tuning parameters
 tuning_type = 'kl_div' # tuning type: Centrality-based (default) or KL Divergence
@@ -141,7 +143,7 @@ with open(input_json_dir+input_json) as json_file:
     discarded_features = json_data['evaluation']['discarded_features']
 
     print("Evaluation type: {0}\nTop k: {1}\nBottom Features Flag: {2}\nVisualize Images: {3}\nN_imgs: {4}\nSorted_ref_features: {5}\nDiscarded_features: {6}".format(eval_type, top_k, bottom_features, visualize_imgs, n_imgs, sorted_ref_features, discarded_features))
-    print('Layer sizes: {0} \n Layer types: {1} \n Activation functions: {2} \n Epochs: {3} \n Learning rate: {4} \n Batch size: {5}'.format(layer_sizes, layer_types, activ_funcs, training_epochs, learning_rate, batch_size))
+    print('Layer sizes: {0} \n Layer types: {1} \n Activation functions: {2} \n Epochs: {3} \n Learning rate: {4} \n Batch size: {5} \n Seed: {6}'.format(layer_sizes, layer_types, activ_funcs, training_epochs, learning_rate, batch_size, seed))
 
 tuning_layer_end = tuning_layer_start + n_tuned_layers - 1 # choose layers on which tuning is executed
 print('Tuning layer start, end: {0}, {1}'.format(tuning_layer_start, tuning_layer_end))
@@ -150,7 +152,7 @@ if arch_reduction_flag:
     layer_sizes = hf.reduce_architecture(layer_sizes, tuning_step, training_epochs, k_selected, n_tuned_layers, start_layer=1) # start layer 1 corresponds to layer 2, i.e. first hidden layer
     tuning_flag = False
     print("Architecture reduction done. Tuning flag turned off.")
-    
+
 # Network and training setup
 # Complement available indices above. Updated at each neuron tuning step.
 off_indices = hf.get_arrdict(layer_sizes, 'empty', 'o')
@@ -159,15 +161,30 @@ avail_indices = hf.get_arrdict(layer_sizes, 'range', 'a')
 # Input data placeholder
 X = tf.placeholder("float", [None, n_input])
 Y = tf.placeholder("float", [None, n_classes])
-    
-# Store layers weight & bias
+
+# read dataset
+D = hf.read_dataset(dataset_name, noise_ratio=noise_ratio, seed=seed)
+X_tr, Y_tr = D.train.points, D.train.labels
+X_val, Y_val = D.validation.points, D.validation.labels
+
+X_tr = np.vstack((X_tr, X_val))
+Y_tr = np.vstack((Y_tr, Y_val))
+
+X_ts, Y_ts = D.test.points, D.test.labels
+
+# store layers weight & bias dict
 weight_init = 'norm'
 bias_init = 'norm'
+
 init_reduction='fan_in'
 
-weights = hf.get_vardict(layer_sizes, weight_init, 'weight', 'w', activ_funcs, init_reduction= init_reduction, seed=seed)
-tuned_weights = hf.get_vardict(layer_sizes, 'zeros', 'weight', 'w', activ_funcs, init_reduction= init_reduction, seed=seed)
-biases = hf.get_vardict(layer_sizes, bias_init, 'bias', 'b', activ_funcs, init_reduction= init_reduction, seed=seed)
+fanin_std_devs = []
+if init_reduction == 'fan_in':
+    fanin_std_devs = hf.get_fanin_stds(X_tr, layer_sizes, activ_funcs, selected_range=(-3, 3))
+
+weights = hf.get_vardict(layer_sizes, weight_init, 'weight', 'w', init_reduction, fanin_std_devs, seed=seed)
+tuned_weights = hf.get_vardict(layer_sizes, 'zeros', 'weight', 'w', seed=seed)
+biases = hf.get_vardict(layer_sizes, bias_init, 'bias', 'b', init_reduction, fanin_std_devs, seed=seed)
 
 # Construct the model
 nnet = hf.multilayer_perceptron(X, weights, biases, activ_funcs, layer_types)
@@ -180,11 +197,6 @@ train_op = optimizer.minimize(loss_op)
 
 # Initialize the variables
 init = tf.global_variables_initializer()
-
-D = hf.read_dataset(dataset_name, noise_ratio=noise_ratio, seed=seed)
-X_tr, Y_tr = D.train.points, D.train.labels
-X_val, Y_val = D.validation.points, D.validation.labels
-X_ts, Y_ts = D.test.points, D.test.labels
 
 with tf.Session() as sess:
     sess.run(init)
@@ -236,20 +248,10 @@ with tf.Session() as sess:
                     if i > 0:
                         print('Min: {0:.2f}, Mean: {1:.2f}, Median: {2:.2f}, Max: {3:.2f} of w{4}'.format(np.min(weight_vals['w'+str(i)]), np.mean(weight_vals['w'+str(i)]), np.median(weight_vals['w'+str(i)]), np.max(weight_vals['w'+str(i)]), i))
                         print('Min: {0:.2f}, Mean: {1:.2f}, Median: {2:.2f}, Max: {3:.2f} of logits{4}i'.format(np.min(logit_vals[str(i)+'i']), np.mean(logit_vals[str(i)+'i']), np.median(logit_vals[str(i)+'i']), np.max(logit_vals[str(i)+'i']), i))
-                        count = np.sum((logit_vals[str(i)+'i'] >= -2) & (logit_vals[str(i)+'i'] <= 2))
-                        print(count/(logit_vals[str(i)+'i'].shape[0]*logit_vals[str(i)+'i'].shape[1]))
-                        
-                    #print('Min: {0:.2f}, Mean: {1:.2f}, Median: {2:.2f}, Max: {3:.2f} of logits{4}'.format(np.min(logit_vals[i]), np.mean(logit_vals[i]), np.median(logit_vals[i]), np.max(logit_vals[i]), i))
-                
-                #print('====')
-                #np_logits1 = np.dot(batch_x, weight_vals['w1'])
-                #np_logits2 = np.dot(np_logits1, weight_vals['w2'])
-                #print('Min: {0:.2f}, Mean: {1:.2f}, Median: {2:.2f}, Max: {3:.2f} of np_logits{4}'.format(np.min(np_logits1), np.mean(np_logits1), np.median(np_logits1), np.max(np_logits1), 1))
-                #print('Min: {0:.2f}, Mean: {1:.2f}, Median: {2:.2f}, Max: {3:.2f} of np_logits{4}'.format(np.min(np_logits2), np.mean(np_logits2), np.median(np_logits2), np.max(np_logits2), 2))
-
-                print('====')
+                        count = np.sum((logit_vals[str(i)+'i'] >= -3) & (logit_vals[str(i)+'i'] <= 3))
+                        print(count/(logit_vals[str(i)+'i'].shape[0]*logit_vals[str(i)+'i'].shape[1]))            
             '''
-
+            
             _, c = sess.run([train_op, loss_op], feed_dict={X: batch_x, Y: batch_y})
             
             # Compute average loss
@@ -262,6 +264,15 @@ with tf.Session() as sess:
             print("\nEpoch:", '%04d' % (epoch))
             print('Execution Time: {0} {1}, Cost: {2}'.format(1000*(end-start), 'ms', avg_cost))
     
+    
+    # save weight and bias dictionaries
+    if save_weights:
+        pickle_basename = output_dir + dataset_name +'/'+ uid 
+        [weight_vals, bias_vals] = sess.run([weights, biases], feed_dict={X: batch_x, Y:batch_y})
+        pickle.dump(weight_vals, open(pickle_basename +'_weights.pkl', 'wb'))
+        pickle.dump(weight_vals, open(pickle_basename +'_biases.pkl', 'wb'))
+        print("Weight and bias tensors pickled under " +pickle_basename+ "*")
+        
     print("Optimization Done.")
 
     pred = tf.nn.softmax(nnet[output_layer_index])  # Apply softmax to outputs
@@ -283,23 +294,12 @@ with tf.Session() as sess:
         ts_auc = roc_auc_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
         print("Train AUC: {0}, Test AUC: {1}".format(tr_auc, ts_auc))
 
-    if evaluate_features_flag:
-        weights_npdict = sess.run(weights)
-        weights_filename = output_dir+str(uid)+'_weights.pkl'
-        pickle.dump(weights_npdict, open(weights_filename, 'wb'))
-        print("Pickled weights in " +weights_filename)
-    
-        bias_dict = sess.run(biases)
-        biases_file = open(output_dir+str(uid)+'_biases.pkl', 'wb')
-        pickle.dump(bias_dict, biases_file)
-        print("Pickled bias values.")
-
 # Feature evaluation
 if evaluate_features_flag:
     weights_npdict = pickle.load(open(weights_filename, 'rb'))
     
     tuning_measure = ''
-    if 'kl_div' in tuning_type or 'ks_test' in tuning_type:
+    if 'kl_div' in tuning_type:
         tuning_measure = (tuning_type +":"+ target_distribution)
     
     scoring_functions = [tuning_measure, 'min', 'max', 'avg', 'median', 'skew', 'kurt', 'std', 'abs_'+tuning_measure, 'abs_min', 'abs_max', 'abs_avg', 'abs_median', 'abs_skew', 'abs_kurt', 'abs_std']

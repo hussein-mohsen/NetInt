@@ -141,10 +141,13 @@ def train_model(space):
                         print("Test AUC ROC: {0}".format(auc))
                 else:
                     if 'TCGA_survival' in dataset_name:
+                        tr_concordance = sess.run(ci, feed_dict={Y: Y_tr, X: X_tr})
                         concordance = sess.run(ci, feed_dict={Y: Y_ts, X: X_ts})
+                        print("Training CI: {0}, Test CI: {1}".format(tr_concordance, concordance))
                     else:
                         mse = (np.square(Y_ts - ts_predictions).mean())
                         r2 = r2_score(Y_ts, ts_predictions)
+                        print("Test MSE: {0}, Test R2: {1}".format(mse, r2))
 
                 print("Epoch: {0}".format(epoch))
                 print("Loss: {0}".format(loss_value))

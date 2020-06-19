@@ -41,21 +41,25 @@ def totality_scale(values):
     return (values/total)
 
 # two-sided vector clipping of values
-# converts values below or above margin to (low or high) exremity values
-def clip_vector(vector, selected_range, range_margin=0.05):   
-    margin_length = (selected_range[1] - selected_range[0]) * range_margin
-    lower_threshold = selected_range[0] + margin_length
-    upper_threshold = selected_range[1] - margin_length
-    vector[vector > upper_threshold] = selected_range[1]
-    vector[vector < lower_threshold] = selected_range[0]
+# converts values below or above margin to (low or high) extremity values
+def clip_vector(vector, selected_range, n_bins=22):
+    bin_width = 1/n_bins
+    margin_length = (selected_range[1] - selected_range[0]) * bin_width
+    
+    lower_threshold = selected_range[0]
+    upper_threshold = selected_range[1]
+    
+    vector[vector > upper_threshold] = (selected_range[1] + margin_length) # border value greater than upper limit of selected range
+    vector[vector < lower_threshold] = (selected_range[0] - margin_length) # opposite border value smaller than lower limit of selected range
 
     return vector
    
 # returns a pmf from of a vectors histogram
-def calculate_histogram_pmf(vector, selected_range=(), n_bins=20):
+# n_bins = 20+2: 20 bins within selected range, 2 bins for outliers (on either side)
+def calculate_histogram_pmf(vector, selected_range=(), n_bins=22):
     if len(selected_range) > 0: 
-        vector = clip_vector(vector, selected_range, (1.0/n_bins))
-        vector_histogram, bins = np.histogram(vector, bins=n_bins, range=selected_range)
+        vector = clip_vector(vector, selected_range, n_bins) # clip vector to account for and include the density of values out of selected_range
+        vector_histogram, bins = np.histogram(vector, bins=n_bins)
     else:
         vector_histogram, bins = np.histogram(vector, bins=n_bins)
     
@@ -75,57 +79,28 @@ def calculate_kl_div_values(input_matrix, seed=1234,
 
     n_samples = 10000
     if target_distribution == 'norm':
-        target_dist = norm.rvs(loc=0, scale=0.3, size=n_samples, random_state=seed)
+        target_dist = norm.rvs(loc=0, scale=1.5, size=n_samples, random_state=seed)
     elif target_distribution == 'inv_powerlaw': # power law and inverse power law distribution
-        target_dist = (-1) * powerlaw.rvs(a=0.65, loc=-2, scale=4, size=n_samples, random_state=seed)
+        target_dist = (-1) * powerlaw.rvs(a=0.65, loc=-3, scale=6, size=n_samples, random_state=seed)
     else:
         raise Exception('Invalid target distribution.')
 
     # calculate histograms of empirical data and target_dist
-    input_matrix = np.apply_along_axis(calculate_histogram_pmf, axis, input_matrix, (-2, 2))
-    target_dist = calculate_histogram_pmf(target_dist)
+    input_matrix = np.apply_along_axis(calculate_histogram_pmf, axis, input_matrix, (-3, 3))
+    target_dist = calculate_histogram_pmf(target_dist, selected_range=(-3, 3))
 
     kl_values = np.apply_along_axis(kl_div, axis, input_matrix, target_dist)
     return kl_values
 
-
-# calculate KS test to compare distance between CDFs of empirical and target_dist samples
-def ks_test(empirical, target_dist, metric='D'):
-    ks_results = stats.ks_2samp(empirical, target_dist)
-    
-    if metric == 'D':
-        return ks_results[0]
-    elif metric == 'p_value':
-        return ks_results[1]
-
-# Calculate KS distance (D or p-)value between scaled weights (per row) with scaled target distribution
-def calculate_ks_values(input_matrix, seed=1234, target_distribution='norm', ks_metric='D',
-                        selected_range=(-2, 2), range_margin=(1.0/20), axis=1):
-    
-    n_samples = 750
-    if target_distribution == 'norm':
-        target_dist = norm.rvs(loc=0, scale=0.3, size=n_samples, random_state=seed)
-    elif target_distribution == 'inv_powerlaw':
-        target_dist = (-1) * powerlaw.rvs(a=0.65, loc=-2, scale=4, size=n_samples, random_state=seed)
-    else:
-        raise Exception('Invalid target distribution.')
-        
-    input_matrix = np.apply_along_axis(clip_vector, axis, input_matrix, selected_range, range_margin)    
-    ks_values = np.apply_along_axis(ks_test, axis, input_matrix, target_dist, ks_metric)
-    return ks_values
-
 # calculates distribution distance (of all rows) per tuning type
 def calculate_distance_values(input_matrix, tuning_type='kl_div', target_distribution='norm', 
-                              ks_metric='D',percentiles=False, axis=1):
+                              percentiles=False, axis=1):
     if(percentiles): # exclude outliers and keep values in [1st, 99th] percentiles
         input_matrix = percentile_input_matrix(input_matrix, 1, 99, axis=axis)
         
     if tuning_type == 'kl_div':
         distance_values = calculate_kl_div_values(input_matrix, target_distribution=target_distribution, 
                                                   axis=axis)
-    elif tuning_type == 'ks_test':
-        distance_values = calculate_ks_values(input_matrix, target_distribution=target_distribution, 
-                                                ks_metric=ks_metric, axis=axis)
 
     return distance_values
 
@@ -145,7 +120,7 @@ def get_off_inds(input_matrix, avail_inds, off_inds, layer_index, input_list=[],
         else:
             ##? to implement betweenness centrality in this section as needed
             
-            if tuning_type == 'kl_div' or tuning_type == 'ks_test':
+            if tuning_type == 'kl_div':
                 increasing_flag = False
                 
                 # calculate KL divergence from a target distribution (default: Gaussian)
@@ -284,6 +259,74 @@ def get_mask_layer(tf_layer):
     mask_layer = tf.Variable(tf.ones(mask_length), trainable=False)
     return mask_layer
 
+# updates initial weights and biases if necessary so that 80-90% of initial 
+# wa+b values into first two hidden layers are within selected_range
+def get_fanin_stds(X, layer_sizes, activ_funcs, selected_range=(-3, 3)):
+    input_matrix = X
+    if(input_matrix.shape[0] > 1000): # if input dataset is large, choose sample of size 1000
+        input_matrix = input_matrix[np.random.choice(input_matrix.shape[0], 1000, replace=False)]
+
+    # adjust weight matrices fed into hidden layers (and not output layer)
+    # e.g., for two hidden layers, adjust W1 (part of 1i, i.e. input to first hidden layer) and W2
+    std_devs = []
+    for wb_index in range(1, len(layer_sizes)):
+        if wb_index > 1:
+            # input_matrix is X or A being combined upcoming weight matrix; input_matrix_dot_W_plus_b in XW+b or WA+b
+            current_activ_func = activ_funcs[wb_index-1]
+            if current_activ_func == 'relu':
+                input_matrix = (input_matrix_dot_W_plus_b > 0) * input_matrix_dot_W_plus_b
+            elif current_activ_func == 'sigmoid':
+                input_matrix = expit(input_matrix_dot_W_plus_b)
+            else: # linear and other unconsidered function
+                input_matrix = input_matrix_dot_W_plus_b
+        
+        std_dev, input_matrix_dot_W_plus_b = get_current_fanin_std(input_matrix, n_dest=layer_sizes[wb_index], selected_range=selected_range)
+        std_devs.append(std_dev)
+
+    return std_devs
+
+# calculates standard deviation value of initial weight matrix to concentrate wa+b values in selected_range
+def get_current_fanin_std(input_matrix, n_dest, selected_range=(-3, 3)):
+    # scale down by square root of destination layer size and multiplication factor as necessary
+    std_dev = (1.0/max(np.sqrt(n_dest), 5)) # initial std_dev is 0.2 or less
+
+    # we'd want 90-95% of wa+b values (i.e. inputs to activation functions, layers li) to be in selected_range
+    percentage_min = 0.9; percentage_max = 0.95
+    
+    high = -1; low = -1; update = False
+    while True:
+        W = np.random.normal(0, std_dev, size=(input_matrix.shape[1], n_dest))
+        b = np.random.normal(0, std_dev, size=n_dest)
+        input_matrix_dot_W_plus_b = np.dot(input_matrix, W) + b
+        current_percentage = get_percentage(input_matrix_dot_W_plus_b, selected_range)
+        
+        if current_percentage < percentage_min:
+            high = std_dev
+            update = True
+            
+            if low == -1:
+                low = std_dev / 4
+        elif current_percentage > percentage_max:
+            low = std_dev
+            update = True
+
+            if high == -1: # edge case, first setting of low
+                high = std_dev * 4
+            
+        if update:
+            std_dev = (high + low) / 2
+            update = False
+        else:
+            break
+        
+    print('Within-range percentage: {0}'.format(current_percentage))
+    return std_dev, input_matrix_dot_W_plus_b
+
+# returns percentage of values within selected range
+def get_percentage(input_matrix, selected_range):
+    count = np.sum((input_matrix >= selected_range[0]) & (input_matrix <= selected_range[1]))
+    return(count/(input_matrix.shape[0]*input_matrix.shape[1]))
+
 # layers size and arr_init define the initialization configuration
 # Example output: For prefix 'o', o1 corresponds for Input layer, o2 for hidden layer 1, etc
 def get_arrdict(layer_sizes, arr_init, prefix):
@@ -304,7 +347,7 @@ def get_arrdict(layer_sizes, arr_init, prefix):
 # layers size and var_init define the architecture and initialization configuration of weights and biases in the network
 # variable type is either weights (2D) or biases (1D) and prefix determines name of resulting variables
 # Example output: For prefix 'w', w1 corresponds for weights between input and first hidden layers, etc.
-def get_vardict(layer_sizes, var_init, var_type, prefix, activ_funcs, init_reduction='fan_in', seed=1234):
+def get_vardict(layer_sizes, var_init, var_type, prefix, init_reduction='fan_in', fanin_std_devs=[], seed=1234):
     dict = {}
     
     n_layers = len(layer_sizes)
@@ -319,14 +362,12 @@ def get_vardict(layer_sizes, var_init, var_type, prefix, activ_funcs, init_reduc
             var_shape = [n_origin, n_dest]
 
         if(var_init == 'norm'):
-            std_dev = 1.0
-            if init_reduction == 'fan_in': #  scale std_dev to encourage values to be ~ favorable intervals, e.g. [-2, 2]
-                # scale down by square root of destination layer size
-                std_dev = (1.0/np.sqrt(n_dest))
-                if activ_funcs[l-1] in ('sigmoid', 'relu'): 
-                     std_dev *= 2
+            if init_reduction == 'fan_in': #  scale std_dev to encourage values to be ~ favorable intervals, e.g. [-3, 3]
+                std_dev = fanin_std_devs[l-1]
+            else:
+                std_dev = 1.0
 
-            dict[var_name] = tf.Variable(tf.random_normal(var_shape, stddev=std_dev, seed=seed))
+            dict[var_name] = tf.Variable(tf.random.normal(var_shape, stddev=std_dev, seed=seed))
         elif(var_init == 'zeros'):
             dict[var_name] = tf.Variable(tf.zeros(var_shape, dtype=tf.float32))
 
@@ -391,6 +432,7 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, sca
 
         Y_ts = np.maximum(Y_ts, 0, Y_ts) # max w/ 0 to fix artifact in data where some y vales < 0
         
+        scaling_type='standard' ## remove 
         feature_scaling = True
         noise_type = 'norm' # Gaussian noise
     elif dataset_name in ('xor', 'moons'):
@@ -544,8 +586,7 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, sca
 
     if feature_scaling:
         scaling_cols = get_scaling_cols(X_tr)
-        print(scaling_cols)
-        
+
         if scaling_type == 'minmax':
             scaler = MinMaxScaler()
         elif scaling_type == 'standard':
@@ -666,7 +707,6 @@ def save_vardict_to_file(filebasename_prefix, vardict, epoch, seed=1234, dict_na
 
     # check for pickling
     if pickling:
-        
         pickle_file = open(filebasename + '.pkl', 'wb')
         pickle.dump(vardict, pickle_file)
 

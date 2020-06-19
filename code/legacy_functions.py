@@ -209,3 +209,30 @@ def get_next_even_batch(X_tr, Y_tr, start, batch_size, epoch, seed=1234, shuffle
         next_start = end % X_tr.shape[0]
 
     return batch_x, batch_y, next_start
+
+# calculate KS test to compare distance between CDFs of empirical and target_dist samples
+def ks_test(empirical, target_dist, metric='D'):
+    ks_results = stats.ks_2samp(empirical, target_dist)
+    if metric == 'D':
+        return ks_results[0]
+    elif metric == 'p_value':
+        return ks_results[1]
+
+# Calculate KS distance (D or p-)value between clipped weights (per row) with clipped target distribution
+def calculate_ks_values(input_matrix, seed=1234, target_distribution='norm', ks_metric='D',
+                        selected_range=(-3, 3), n_bins=22, axis=1):
+
+    n_samples = 750
+
+    ### REVIEW IF CLIPPING IS NEEDED OR IT MIGHT AFFECT RESULTS OF KS-TEST
+    if target_distribution == 'norm':
+        target_dist = clip_vector(norm.rvs(loc=0, scale=1.5, size=n_samples, random_state=seed), selected_range, n_bins)
+    elif target_distribution == 'inv_powerlaw':
+        target_dist = clip_vector((-1) * powerlaw.rvs(a=0.65, loc=-3, scale=6, size=n_samples, random_state=seed), selected_range, n_bins)
+    else:
+        raise Exception('Invalid target distribution.')
+
+    input_matrix = np.apply_along_axis(clip_vector, axis, input_matrix, selected_range, n_bins)    
+    ks_values = np.apply_along_axis(ks_test, axis, input_matrix, target_dist, ks_metric)
+
+    return ks_values
