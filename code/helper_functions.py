@@ -23,6 +23,7 @@ from tensorflow.contrib.learn.python.learn.datasets.base import Datasets
 from scipy import stats
 from scipy.spatial import distance
 from scipy.stats import powerlaw, norm
+from scipy.special import expit
 
 from helper_objects import DataSet
 from tensorflow.python.framework import dtypes
@@ -32,6 +33,7 @@ from hyperopt import space_eval
 import re
 import os
 import platform
+from keras_preprocessing.image.affine_transformations import scipy
 
 epsilon = 0.00001
 
@@ -107,7 +109,7 @@ def calculate_distance_values(input_matrix, tuning_type='kl_div', target_distrib
 # gets indices to be tuned (i.e. turned off and replaced by 0 values)
 # available indices are the ones not tuned prior to selection   
 # tuning_type: 'kl_div' (default: with Gaussian)   
-#              'random': 
+#              'random': random
 def get_off_inds(input_matrix, avail_inds, off_inds, layer_index, input_list=[], 
                  k_selected=4, tuning_type='kl_div', dt=[('weight', float)], 
                  target_distribution='norm', percentiles=False):
@@ -299,20 +301,22 @@ def get_current_fanin_std(input_matrix, n_dest, selected_range=(-3, 3)):
         b = np.random.normal(0, std_dev, size=n_dest)
         input_matrix_dot_W_plus_b = np.dot(input_matrix, W) + b
         current_percentage = get_percentage(input_matrix_dot_W_plus_b, selected_range)
-        
+
+        print('Current percentage: {0}'.format(current_percentage))
+
         if current_percentage < percentage_min:
             high = std_dev
             update = True
-            
+
             if low == -1:
-                low = std_dev / 4
+                low = std_dev / 8
         elif current_percentage > percentage_max:
             low = std_dev
             update = True
 
             if high == -1: # edge case, first setting of low
-                high = std_dev * 4
-            
+                high = std_dev * 8
+
         if update:
             std_dev = (high + low) / 2
             update = False
@@ -386,12 +390,13 @@ def reduce_architecture(layer_sizes, tuning_step, epochs, k_selected, n_tuned_la
     return layer_sizes
 
 # reads data
-def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, scaling_type='minmax', seed=1234):
+def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, seed=1234):
     # parameters used on dataset-specific basis
     feature_scaling = False
     scaling_type = 'minmax'
     noise_type = 'zeros' # binomial noise is default
-
+    col_names = []
+    
     if dataset_name == 'mnist':
         mnist = read_data_sets('../data/MNIST_data/', one_hot=one_hot_encoding)
 
@@ -422,6 +427,7 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, sca
             diabetes_filename = '../data/csv_data/diabetes_data_smote_manoj_etal_processed.csv'
 
         print(diabetes_filename)
+        col_names = np.genfromtxt(diabetes_filename, max_rows=1, names=True, deletechars="~!@#$%^&*()=+~\|]}[{'; /?.>,<", delimiter=',', encoding='utf-8').dtype.names[0:-1]
         diabetes_data =  np.genfromtxt(diabetes_filename, delimiter=',', skip_header=1) # diabetes shape: (101767, 36)
 
         X = diabetes_data[:, 0:-1] # select all data columns
@@ -470,6 +476,7 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, sca
         n_drugs = len(drug_list)
         
         X_cols = n_drugs # baseline
+        col_names = np.array(drug_list)
 
         if task_id < 4: # expression profiles included in tasks 1-3
             expr_filename = '../data/AML-Drug-Sensitivity/S8_Gene_Counts_RPKM.csv'
@@ -481,6 +488,7 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, sca
             expr_data = np.genfromtxt(expr_filename, usecols=np.arange(2, expr_cols), skip_header=1, delimiter=',')
             n_expr_genes = expr_data.shape[0];
             X_cols += n_expr_genes # include gene expression vectors
+            col_names = np.concatenate((col_names, expr_genes['Symbol']))
             
             expr_sample_ind = {} # index of a expr_samples is its col index in expression file; dict to be used when creating final dataset
             for s in range(len(expr_samples)):
@@ -498,8 +506,10 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, sca
             if task_id == 2: 
                 var_data = np.sum(var_data, axis=1)
                 X_cols += 1 # include singular vaiant deleteriousness count
+                col_names = np.append(col_names, 'variant_count')
             else: 
                 X_cols += var_data.shape[1] # number of genes in which there are variants        
+                col_names = np.concatenate((col_names, var_genes))
                 
             var_sample_ind = {} # index of a var_samples is its col index in variants file; dict to be used when creating final dataset
             for s2 in range(len(var_samples)):
@@ -530,7 +540,7 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, sca
                 drug_inds.append(drug_ind[drug_data['inhibitor'][i]]) # used for to build one-hot encoded vector as part of input
                 selected_points.append(i)
         
-        X = np.zeros((len(drug_inds), X_cols))
+        X = np.zeros((len(drug_inds), X_cols)) # reserve space for dataset
         
         drug_col_start = 0 # drugs vector first, all tasks
         X[np.arange(X.shape[0]), drug_col_start + np.array(drug_inds)] = 1 # one-hot encoded drug vector block in input dataset
@@ -572,6 +582,7 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, sca
         with open(survival_filename) as f:
             ncols = len(f.readline().split(','))
     
+        col_names = np.genfromtxt(survival_filename, usecols=range(5, ncols), max_rows=1, names=True, deletechars="~!@#$%^&*()=+~\|]}[{'; /?.>,<", delimiter=',', encoding='utf-8').dtype.names
         survival_data =  np.genfromtxt(survival_filename, delimiter=',', skip_header=1, usecols=range(1, ncols)) # skip first column with TCGA barcodes
         
         Y = survival_data[:, 0:3] # col 0: start, 1: end, etc.
@@ -611,9 +622,9 @@ def read_dataset(dataset_name='mnist', one_hot_encoding=True, noise_ratio=0, sca
         
         print("Noise at ration {0} added.".format(noise_ratio))
         
-    train = DataSet(X_tr, Y_tr)
-    validation = DataSet(X_val, Y_val)
-    test = DataSet(X_ts, Y_ts)
+    train = DataSet(X_tr, Y_tr, np.array(col_names))
+    validation = DataSet(X_val, Y_val, np.array(col_names))
+    test = DataSet(X_ts, Y_ts, np.array(col_names))
 
     return Datasets(train=train, validation=validation, test=test)  
 
@@ -674,13 +685,20 @@ def unpack_dict(input_dict):
 
 # to get best result with its corresponding hyperparameter from a dictionary returned by hyperopt
 # t is a Trials object after the execution of hyperopt's fmin()
-def get_best_result(t, hp_space, metric='accuracy'):
-    best_metric_value = 0
+def get_best_result(t, hp_space, metric='loss', direction='min'):
+    best_metric_value = np.Inf
+    if direction == 'max':
+        best_metric_value = -np.Inf
+    
     best_trial_result = None
     best_trial_hyperparam_space = {}
     for trial in t.trials:
         try:
-            if (trial['result'][metric] > best_metric_value):
+            metric_value = trial['result'][metric]
+            if direction == 'max':
+                metrix_value = -metric_value
+
+            if (trial['result'][metric] < best_metric_value):
                 best_metric_value = trial['result'][metric]
                 best_trial_result = trial['result']
                 best_trial_hyperparam_space = unpack_dict(trial['misc']['vals'])      
@@ -757,3 +775,15 @@ def percentile_input_matrix(input_matrix, bottom_percentile=1, top_percentile=99
         input_matrix = input_matrix[:, bottom_percentile:top_percentile]
     
     return input_matrix
+
+# combines predictive performance and overfitting; used in model_search
+def get_performance_score(tr_pred_perfomance, ts_pred_performance):
+    tr_ts_diff = tr_pred_perfomance - ts_pred_performance
+
+    
+    if tr_ts_diff < 0.035: # 0-3.5%, no overfitting = 1
+        anti_overfitting_score = 1 #- (tr_ts_diff * 26.66)
+    else:
+        anti_overfitting_score = 0 # 3.5%+ margins overfit, strictly penalized
+        
+    return (0.2 * ts_pred_performance) + (0.8 * anti_overfitting_score) # strictly penalizes overfit models

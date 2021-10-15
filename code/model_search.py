@@ -12,6 +12,7 @@ from sklearn.metrics import accuracy_score, precision_score, roc_auc_score, r2_s
 import collections
 import random
 import sys
+from cmath import nan
 
 # get data using read_dataset()
 # feed train_model to fmin()
@@ -20,26 +21,30 @@ import sys
 # the function to be fed to hyperopt's fmin()
 # X and Y are tf.placeholders, D is a Dataset object
 def train_model(space):
-    dataset_name = 'TCGA_survival_KIPAN'  #'AML_4' #'moons' #'psychencode' #'mnist'
-    classification = False
-    scaling_type = 'standard'
+    dataset_name = 'AML_3' #'diabetes_SMOTE' #'TCGA_survival_KIPAN'  #'AML_4' #'moons' #'psychencode' #'mnist'
+    
+    classification = True
+    if 'TCGA_survival' in dataset_name:
+        classification = False
     
     print("Dataset name: {0}".format(dataset_name))
 
     batch_size=int(space["batch_size"])
     learning_rate=float(space["learning_rate"])
+    regularization_beta = float(space["regularization_beta"])
     n_hidden_1=int(space["n_hidden_1"])
     n_hidden_2=int(space["n_hidden_2"])
     activ_func1= str(space["activ_func1"])
     activ_func2= str(space["activ_func2"])
     activ_func3= str(space["activ_func3"])
 
-    D = hf.read_dataset(dataset_name=dataset_name, one_hot_encoding=classification, scaling_type=scaling_type)
+    D = hf.read_dataset(dataset_name=dataset_name, one_hot_encoding=classification)
     X_tr, Y_tr = D.train.points, D.train.labels
+    X_val, Y_val = D.validation.points, D.validation.labels
     X_ts, Y_ts = D.test.points, D.test.labels
 
-    training_epochs = 800
-    display_step = min(50, int(training_epochs/2))
+    training_epochs = 3000
+    display_step = min(250, int(training_epochs/2))
 
     n_input = D.train.points.shape[1] # number of features
     n_batch = int(D.train.points.shape[0]/batch_size)
@@ -49,16 +54,16 @@ def train_model(space):
         layer_sizes = [n_input, n_hidden_1, n_hidden_2, n_hidden_3]
     else:
         if classification:
-            print(collections.Counter(np.argmax(Y_ts, 1).flatten()))
+            print(collections.Counter(np.argmax(Y_tr, 1).flatten()))
             n_output = len(np.unique(np.argmax(D.train.labels, axis=1)))
         else:
             n_output = 1
             
         layer_sizes = [n_input, n_hidden_1, n_hidden_2, n_output]
 
-    print("Batch size: {0} \nlearning rate: {1} \nlayer_sizes: {2} \n" \
-          "activ_func1: {3} \nactiv_func2: {4} \nactiv_func3: {5}".format(batch_size, 
-          learning_rate, layer_sizes, activ_func1, activ_func2, activ_func3))
+    print("Batch size: {0} \nlearning rate: {1}\nregularization_beta: {2} \nlayer_sizes: {3} \n" \
+          "activ_func1: {4} \nactiv_func2: {5} \nactiv_func3: {6}".format(batch_size, 
+          learning_rate, regularization_beta, layer_sizes, activ_func1, activ_func2, activ_func3))
     
     print("N_input: {0} \nn_output: {1} \nN_batch: {2} \n".format(n_input, n_output, n_batch))
 
@@ -70,8 +75,12 @@ def train_model(space):
     activ_funcs = [activ_func1, activ_func2, activ_func3]
     
     init_reduction = 'fan_in'
-    weights = hf.get_vardict(layer_sizes, 'norm', 'weight', 'w', activ_funcs, init_reduction)
-    biases = hf.get_vardict(layer_sizes, 'norm', 'bias', 'b', activ_funcs, init_reduction)
+    fanin_std_devs = []
+    if init_reduction == 'fan_in':
+        fanin_std_devs = hf.get_fanin_stds(X_tr, layer_sizes, activ_funcs, selected_range=(-3, 3))
+    
+    weights = hf.get_vardict(layer_sizes, 'norm', 'weight', 'w', init_reduction, fanin_std_devs)
+    biases = hf.get_vardict(layer_sizes, 'norm', 'bias', 'b', init_reduction, fanin_std_devs)
 
     print("Layer sizes: {}".format(layer_sizes)) 
     print("Activation_funcs: {}".format(activ_funcs))
@@ -95,6 +104,21 @@ def train_model(space):
         else: # regression
             loss_op = tf.losses.mean_squared_error(predictions=nnet[output_layer_index], labels=Y)
     
+    # L2 regularization
+    if 'TCGA_survival' in dataset_name:
+        regularizers = tf.cast(tf.nn.l2_loss(weights['w1']), tf.float64)
+    else:
+        regularizers = tf.nn.l2_loss(weights['w1'])
+
+    for i in range(2, (len(weights)+1)):
+        if 'TCGA_survival' in dataset_name:
+            regularizers = regularizers + tf.cast(tf.nn.l2_loss(weights['w' +str(i)]), tf.float64)
+        else:
+            regularizers = regularizers + tf.nn.l2_loss(weights['w' +str(i)])
+            
+    print('L2 Regularization added.')
+    loss_op = tf.reduce_mean(loss_op + (regularization_beta * regularizers))
+    
     optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
     train_op = optimizer.minimize(loss_op)
         
@@ -116,10 +140,10 @@ def train_model(space):
 
                 # Compute average loss
                 avg_loss_value += loss_value / n_batch
-                    
-            end = time.time()
-
-            if(epoch % display_step == 0): 
+                
+            if(epoch % display_step == 0 or epoch == training_epochs): 
+                print("Epoch: {0}".format(epoch))
+                
                 # Test model
                 if 'TCGA_survival' not in dataset_name:
                     if classification:
@@ -127,80 +151,92 @@ def train_model(space):
                     else:
                         pred = nnet[output_layer_index]
                     
-                    ts_predictions = sess.run(pred, feed_dict={X: X_ts, Y: Y_ts})
+                    tr_predictions = sess.run(pred, feed_dict={X: X_tr, Y: Y_tr})
+                    val_predictions = sess.run(pred, feed_dict={X: X_val, Y: Y_val})
                 
                 if classification:
-                    accuracy = accuracy_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
-                    print("Test Accuracy: {0}".format(accuracy))
+                    tr_accuracy = accuracy_score(np.argmax(Y_tr, 1), np.argmax(tr_predictions, 1))
+                    val_accuracy = accuracy_score(np.argmax(Y_val, 1), np.argmax(val_predictions, 1))
+                    print("Training Accuracy: {0}, Val. Accuracy: {1}".format(tr_accuracy, val_accuracy))
                     
                     if(n_output == 2):
-                        precision = precision_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
-                        print("Test Precision: {0}".format(precision))
+                        tr_precision = precision_score(np.argmax(Y_tr, 1), np.argmax(tr_predictions, 1))
+                        val_precision = precision_score(np.argmax(Y_val, 1), np.argmax(val_predictions, 1))
+                        print("Training Precision: {0}, Val. Precision: {1}".format(tr_precision, val_precision))
                         
-                        auc = roc_auc_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
-                        print("Test AUC ROC: {0}".format(auc))
+                        tr_auc = roc_auc_score(np.argmax(Y_tr, 1), np.argmax(tr_predictions, 1))
+                        val_auc = roc_auc_score(np.argmax(Y_val, 1), np.argmax(val_predictions, 1))
+                        print("Training AUC ROC: {0}, Val. AUC ROC: {1}".format(tr_auc, val_auc))
+                        
+                    if abs(tr_accuracy - val_accuracy) > 0.25:
+                        print('Early termination; Tr-Val accuracy difference > 25%.')
+                        break
                 else:
                     if 'TCGA_survival' in dataset_name:
-                        tr_concordance = sess.run(ci, feed_dict={Y: Y_tr, X: X_tr})
-                        concordance = sess.run(ci, feed_dict={Y: Y_ts, X: X_ts})
-                        print("Training CI: {0}, Test CI: {1}".format(tr_concordance, concordance))
-                    else:
-                        mse = (np.square(Y_ts - ts_predictions).mean())
-                        r2 = r2_score(Y_ts, ts_predictions)
-                        print("Test MSE: {0}, Test R2: {1}".format(mse, r2))
+                        tr_concordance = sess.run(ci, feed_dict={X: X_tr, Y: Y_tr})
+                        val_concordance = sess.run(ci, feed_dict={X: X_val, Y: Y_val})
+                        print("Training CI: {0}, Val. CI: {1}".format(tr_concordance[0], val_concordance[0]))
 
-                print("Epoch: {0}".format(epoch))
+                        if np.isnan(tr_concordance[0]):
+                            print('Oops!')
+                            break
+                    else:
+                        tr_mse = (np.square(Y_tr - tr_predictions).mean())
+                        val_mse = (np.square(Y_val - val_predictions).mean())
+                        
+                        tr_r2 = r2_score(Y_tr, tr_predictions)
+                        val_r2 = r2_score(Y_val, val_predictions)
+                        print("Training MSE: {0}, Val. MSE: {1}\nTraining R2: {2}, Val. R2: {3}".format(tr_mse, val_mse, tr_r2, val_r2))
+                
+                end = time.time()
                 print("Loss: {0}".format(loss_value))
                 print("Epoch duration: {0}".format(str(end-start)+" sec.\n"))
-                
-    # train and return loss
-    if 'TCGA_survival' in dataset_name:
-        return {'concordance': concordance, 'loss': avg_loss_value, 'status': STATUS_OK}
-    else:    
-        if classification:
-            if n_output == 2:
-                return {'auc': auc, 'accuracy': accuracy, 'precision': precision, 'loss': avg_loss_value, 'status': STATUS_OK}
-            else:
-                return {'accuracy': accuracy, 'loss': avg_loss_value, 'status': STATUS_OK}
+
+        if 'TCGA_survival' in dataset_name:
+            ts_concordance = sess.run(ci, feed_dict={X: X_ts, Y: Y_ts})
+            print("Test CI: {0}".format(ts_concordance[0]))
+            
+            perf_score = hf.get_performance_score(tr_concordance[0], ts_concordance[0])
+            return {'loss': -perf_score, 'perf_score': perf_score, 'tr_concordance': tr_concordance[0], 'ts_concordance': ts_concordance[0], 'val_accuracy': val_concordance[0], 'avg_loss': avg_loss_value, 'status': STATUS_OK}
         else:
-            return {'mse': mse, 'loss': avg_loss_value, 'status': STATUS_OK}
+            if classification:
+                ts_predictions = sess.run(pred, feed_dict={X: X_ts, Y: Y_ts})
+            
+                ts_accuracy = accuracy_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
+                print("Test Accuracy: {0}".format(ts_accuracy))
+                
+                if(n_output == 2):
+                    ts_precision = precision_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
+                    print("Test Precision: {0}".format(ts_precision))
+                    
+                    ts_auc = roc_auc_score(np.argmax(Y_ts, 1), np.argmax(ts_predictions, 1))
+                    print("Test AUC ROC: {0}".format(ts_auc))
+                    
+                    perf_score = hf.get_performance_score(tr_auc, ts_auc)
+                    return {'loss': -perf_score, 'perf_score': perf_score, 'tr_auc': tr_auc, 'ts_auc': ts_auc, 'val_auc': val_auc, 'tr_accuracy': tr_accuracy, 'ts_accuracy': ts_accuracy, 'val_accuracy': val_accuracy, 'tr_precision': tr_precision, 'ts_precision': ts_precision, 'val_precision': val_precision, 'avg_loss': avg_loss_value, 'status': STATUS_OK}
+                else:
+                    perf_score = hf.get_performance_score(tr_accuracy, ts_accuracy)
+                    return {'loss': -perf_score, 'perf_score': perf_score, 'tr_accuracy': tr_accuracy, 'ts_accuracy': ts_accuracy, 'val_accuracy': val_accuracy, 'avg_loss': avg_loss_value, 'status': STATUS_OK}
+            else:
+                return {'mse': val_mse, 'loss': avg_loss_value, 'status': STATUS_OK}
 
     
 def main():
     print("Start")
     hf.set_seed(1234)
 
-    '''
-    # to train a single model
-    space = {
-        'learning_rate': 0.015959604297247607,
-        'batch_size': 247,
-        'activ_func1': 'sigmoid',
-        'activ_func2': 'sigmoid',
-        'activ_func3': 'softmax',
-        'n_hidden_1': 6,
-        'n_hidden_2': 104
-    }
-        
-    trainings_results = train_model(space)
-    print(trainings_results)
-    '''
-
-    # expanded space
-    space = {
-                'learning_rate': hp.uniform('learning_rate', 0.000001, 0.0001), 
-                'batch_size': hp.choice('batch_size', (8, 16, 32)), 
-                #'batch_size': hp.choice('batch_size', (128, 256, 512, 1024)), 
-                'activ_func1': hp.choice('activ_func1', ('relu', 'sigmoid')), 
-                'activ_func2': hp.choice('activ_func2', ('relu', 'sigmoid')), 
-                'activ_func3': hp.choice('activ_func3', ['linear']), 
-                'n_hidden_1': hp.uniform('n_hidden_1', 2000, 3000), 
-                'n_hidden_2': hp.uniform('n_hidden_2', 2000, 3000),
-                'n_hidden_3': hp.uniform('n_hidden_3', 2000, 3000) # used only for cox models
+    space = {   'learning_rate': hp.uniform('learning_rate', 0.001, 0.01),
+                'regularization_beta': hp.uniform('regularization_beta', 0.001, 0.01), 
+                'batch_size': hp.choice('batch_size', (128, 256, 512)),
+                'activ_func1': hp.choice('activ_func1', ('relu', 'sigmoid')),
+                'activ_func2': hp.choice('activ_func2', ('relu', 'sigmoid')),
+                'activ_func3': hp.choice('activ_func3', ['linear']),
+                'n_hidden_1': hp.uniform('n_hidden_1', 400, 600),
+                'n_hidden_2': hp.uniform('n_hidden_2', 400, 600)
     }
 
     t = Trials()
-    best = fmin(train_model, space=space, algo=tpe.suggest, max_evals=50, trials=t)
+    best = fmin(train_model, space=space, algo=tpe.suggest, max_evals=100, trials=t)
     print('TPE best: {}'.format(space_eval(space, best)))
 
     for trial in t.trials:
@@ -211,6 +247,6 @@ def main():
             print('Error with a hyperparameter space occurred.')
             continue
 
-    print("Best results: {}".format(hf.get_best_result(t, space, metric='accuracy')))
+    print("Best results: {}".format(hf.get_best_result(t, space, metric='loss', direction='min')))
 
 main()

@@ -7,7 +7,7 @@ import numpy as np
 from scipy import stats
 from scipy.spatial import distance
 
-import matplotlib.pyplot as plt
+
 
 # calculate scores of an individual function
 def calculate_indiv_function_values(matrix, scoring_func, axis=1):
@@ -17,31 +17,31 @@ def calculate_indiv_function_values(matrix, scoring_func, axis=1):
     
     increasing_flag = False
     if('sum' in scoring_func):
-        feature_scores = np.sum(matrix, axis=1)
+        feature_scores = np.sum(matrix, axis=axis)
     elif('avg' in scoring_func):
-        feature_scores = np.mean(matrix, axis=1)
+        feature_scores = np.mean(matrix, axis=axis)
     elif('median' in scoring_func):
-        feature_scores = np.median(matrix, axis=1)
+        feature_scores = np.median(matrix, axis=axis)
     elif('min' in scoring_func):
-        feature_scores = np.min(matrix, axis=1)
+        feature_scores = np.min(matrix, axis=axis)
         increasing_flag = True
     elif('std' in scoring_func):
-        feature_scores = np.std(matrix, axis=1)
+        feature_scores = np.std(matrix, axis=axis)
         increasing_flag = True
     elif('max' in scoring_func):
-        feature_scores = np.max(matrix, axis=1)
+        feature_scores = np.max(matrix, axis=axis)
     elif('skew' in scoring_func):
-        feature_scores = stats.skew(matrix, axis=1)
+        feature_scores = stats.skew(matrix, axis=axis)
         increasing_flag = True
     elif('kurt' in scoring_func):
-        feature_scores = stats.kurtosis(matrix, axis=1)
+        feature_scores = stats.kurtosis(matrix, axis=axis)
     elif('kl_div' in scoring_func or 'ks_test' in scoring_func): #e.g. kl_div:norm, ks_test:norm, etc.
         values = scoring_func.split(':')
         distance_measure = values[0]
         target_distribution = values[1]
 
         # Note: For weights outcoming from input matrix, axis = 1
-        feature_scores = hf.calculate_distance_values(matrix, tuning_type=distance_measure, shift_type='min', scale_type='minmax', target_distribution=target_distribution, axis=1)
+        feature_scores = hf.calculate_distance_values(matrix, tuning_type=distance_measure, shift_type='min', scale_type='minmax', target_distribution=target_distribution, axis=axis)
         increasing_flag = True
     else:
         raise Exception('Invalid scoring function: ' +str(scoring_func))
@@ -144,7 +144,7 @@ def calculate_img_features_pvalue(sorted_input_features, input_data, top_k, n_co
 # bottom_features is a boolean flag to determine if we need to assess bottom features (e.g. for diabetes dataset as opposed to xor where only top features matter)
 # visualize_img is a parameter to select between assessment methods for image data (if True, visualization with selected pixels highlighted, otherwise, p_value generation per custom test above) 
 # n_trials are the ones used to generate the empirical p_value in case visualize_img=False 
-def evaluate_features(dataset_name, weights_npdict, scoring_functions, eval_type, sorted_ref_features=[], discarded_features=[], output_dir='', uid=1234, top_k=10, input_data=[], input_labels=[], bottom_features=True, visualize_imgs=True, n_imgs=-1, n_trials=10000):        
+def evaluate_features(dataset_name, input_matrix, scoring_functions, eval_type, sorted_ref_features=[], discarded_features=[], output_dir='', uid=1234, top_k=10, input_data=[], input_labels=[], bottom_features=True, visualize_imgs=True, n_imgs=-1, n_trials=10000):        
     output_dir += str(uid)+'/'
     os.makedirs(output_dir)
     print('Results will be saved in ' + str(output_dir))

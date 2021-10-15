@@ -3,15 +3,14 @@ import numpy as np
 # A simplified version of TensorFlow's DataSet class
 class DataSet(object):
 
-  def __init__(self,
-               points,
-               labels):
+  def __init__(self, points, labels, feature_names):
 
     if points is not None:
         self._num_examples = points.shape[0]
 
         self._points = points
         self._labels = labels
+        self._feature_names = feature_names
         self._epochs_completed = 0
         self._index_in_epoch = 0
         
@@ -22,6 +21,10 @@ class DataSet(object):
   @property
   def labels(self):
     return self._labels
+
+  @property
+  def feature_names(self):
+    return self._feature_names
 
   @property
   def num_examples(self):

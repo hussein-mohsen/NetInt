@@ -25,6 +25,8 @@ from scipy.special import expit
 
 # Hyperparameters
 learning_rate = 0.001
+regularization='L2'
+regularization_beta=0.001
 training_epochs = 100
 batch_size = 100
 
@@ -35,13 +37,11 @@ input_json = 'mnist-nonlinear_net.json'
 # Set random seed for replication
 seed=np.random.randint(9999)
 hf.set_seed(seed=seed)
-display_step = 1
 evaluate_features_flag = False
 save_weights = True
 
 # Tuning parameters
 tuning_type = 'kl_div' # tuning type: Centrality-based (default) or KL Divergence
-scale_type = 'minmax'
 shift_type = 'min' # type of shifting the target distribution to positive values in KL div-based tuning
 target_distribution = 'norm' # target distribution in KL div-based tuning
 tuning_step = 2 # number of step(s) at which centrality-based tuning periodically takes place
@@ -51,6 +51,7 @@ k_selected = 2 # number of neurons selected to be tuned ('turned off') each roun
 n_tuned_layers = 1 # number of layers to be tuned; a value of 2 means layers 2 and 3 (1st & 2nd hidden layers will be tuned)
 percentiles=False
 noise_ratio = 0.0
+
 
 output_dir = "results/"
 uid = str(uuid.uuid4())[0:8] # unique id
@@ -69,6 +70,7 @@ parser.add_argument("--st", help="Distribution shift type") # shift type of the 
 parser.add_argument("--td", help="Target distirubion for KL-divergence based comparisons") # shift type of the weight distribution to positive
 parser.add_argument("--nr", type=float, help="Noise ratio (added to data)")
 parser.add_argument("--ar", type=int, help="Architecture reduction boolean")
+parser.add_argument("--rg", help="Regularization technique") # 'none' or 'L2'
 
 args = parser.parse_args()
 
@@ -78,7 +80,7 @@ if args.ts:
 
 if args.tt:
     tuning_type = args.tt
-    print("Tuning type set to {}".format(n_tuned_layers))
+    print("Tuning type set to {}".format(tuning_type))
     
 if args.sd:
     seed = args.sd
@@ -109,6 +111,10 @@ if args.td:
 if args.nr:
     noise_ratio = args.nr
     print("Noise ratio set to {}".format(noise_ratio))
+    
+if args.rg:
+    regularization = args.rg
+    print("Regularization technique set to {}".format(regularization))
          
 tuning_flag = False
 if args.ts or args.tt:
@@ -133,6 +139,7 @@ with open(input_json_dir+input_json) as json_file:
     training_epochs = json_data['training_params']['epochs']
     learning_rate = json_data['training_params']['learning_rate']
     batch_size = json_data['training_params']['batch_size']
+    regularization_beta = json_data['training_params']['regularization_beta']
     
     eval_type = json_data['evaluation']['eval_type']
     top_k = json_data['evaluation']['top_k']
@@ -143,15 +150,18 @@ with open(input_json_dir+input_json) as json_file:
     discarded_features = json_data['evaluation']['discarded_features']
 
     print("Evaluation type: {0}\nTop k: {1}\nBottom Features Flag: {2}\nVisualize Images: {3}\nN_imgs: {4}\nSorted_ref_features: {5}\nDiscarded_features: {6}".format(eval_type, top_k, bottom_features, visualize_imgs, n_imgs, sorted_ref_features, discarded_features))
-    print('Layer sizes: {0} \n Layer types: {1} \n Activation functions: {2} \n Epochs: {3} \n Learning rate: {4} \n Batch size: {5} \n Seed: {6}'.format(layer_sizes, layer_types, activ_funcs, training_epochs, learning_rate, batch_size, seed))
+    print('Layer sizes: {0} \n Layer types: {1} \n Activation functions: {2} \n Epochs: {3} \n Learning rate: {4} \n Batch size: {5} \n Seed: {6}\n Regularization: {7}\n Regularization Beta: {8}'.format(layer_sizes, layer_types, activ_funcs, training_epochs, learning_rate, batch_size, seed, regularization, regularization_beta))
 
-tuning_layer_end = tuning_layer_start + n_tuned_layers - 1 # choose layers on which tuning is executed
-print('Tuning layer start, end: {0}, {1}'.format(tuning_layer_start, tuning_layer_end))
+if tuning_flag:
+    tuning_layer_end = tuning_layer_start + n_tuned_layers - 1 # choose layers on which tuning is executed
+    print('Tuning layer start, end: {0}, {1}'.format(tuning_layer_start, tuning_layer_end))
 
 if arch_reduction_flag:
     layer_sizes = hf.reduce_architecture(layer_sizes, tuning_step, training_epochs, k_selected, n_tuned_layers, start_layer=1) # start layer 1 corresponds to layer 2, i.e. first hidden layer
     tuning_flag = False
     print("Architecture reduction done. Tuning flag turned off.")
+
+display_step = min(100, int(training_epochs/2))
 
 # Network and training setup
 # Complement available indices above. Updated at each neuron tuning step.
@@ -177,7 +187,6 @@ weight_init = 'norm'
 bias_init = 'norm'
 
 init_reduction='fan_in'
-
 fanin_std_devs = []
 if init_reduction == 'fan_in':
     fanin_std_devs = hf.get_fanin_stds(X_tr, layer_sizes, activ_funcs, selected_range=(-3, 3))
@@ -192,13 +201,33 @@ nnet = hf.multilayer_perceptron(X, weights, biases, activ_funcs, layer_types)
 # Define loss function and optimizer
 output_layer_index = len(layer_sizes)-1 # since indexing starts from 0
 loss_op = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=nnet[output_layer_index], labels=Y))
+
+# regularization
+if regularization == 'L2':
+    if 'TCGA_survival' in dataset_name:
+        regularizers = tf.cast(tf.nn.l2_loss(weights['w1']), tf.float64)
+    else:
+        regularizers = tf.nn.l2_loss(weights['w1'])
+    
+    for i in range(2, (len(weights)+1)):
+        if 'TCGA_survival' in dataset_name:
+            regularizers = regularizers + tf.cast(tf.nn.l2_loss(weights['w' +str(i)]), tf.float64)
+        else:
+            regularizers = regularizers + tf.nn.l2_loss(weights['w' +str(i)])
+            
+    print('L2 Regularization added.')
+    loss_op = tf.reduce_mean(loss_op + (regularization_beta * regularizers))  
+    
 optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
 train_op = optimizer.minimize(loss_op)
 
 # Initialize the variables
 init = tf.global_variables_initializer()
 
-with tf.Session() as sess:
+config = tf.ConfigProto()
+config.gpu_options.allow_growth = True
+
+with tf.Session(config=config) as sess:
     sess.run(init)
     print("Training has started.")
     
@@ -260,7 +289,7 @@ with tf.Session() as sess:
         end = time.time()
             
         # Display logs per epoch step
-        if epoch % display_step == 0:
+        if epoch%1 == 0 or epoch == training_epochs or epoch % display_step == 0:
             print("\nEpoch:", '%04d' % (epoch))
             print('Execution Time: {0} {1}, Cost: {2}'.format(1000*(end-start), 'ms', avg_cost))
     
